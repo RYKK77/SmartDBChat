@@ -98,8 +98,8 @@ streamlit run app.py
 
 系统使用统一的 OpenAI 接口标准，支持多种模型：
 
-- **OpenAI**：使用默认 base_url 和 gpt-4 系列模型
-- **智谱 AI**：设置 base_url 为智谱 AI 接口地址，model 为 glm-4-plus
+- **OpenAI**：设置 base_url 和 gpt-4 系列模型
+- **智谱 AI**：使用**默认** base_url 为智谱 AI 接口地址，model 为 glm-4-plus
 - **Azure OpenAI**：设置 base_url 为 Azure 部署端点
 - **其他兼容服务**：任何兼容 OpenAI 接口的服务均可通过配置接入
 
