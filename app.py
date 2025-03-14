@@ -9,6 +9,8 @@ import sqlite3
 import hashlib
 from datetime import datetime, timedelta
 
+from pygments.lexers import go
+
 
 class SemanticQueryCache:
     def __init__(self, cache_db_path="semantic_cache.db", similarity_threshold=0.85):
@@ -420,10 +422,10 @@ class NLDatabaseQuery:
         return list(set(tables))
 
     def get_schema_info(self) -> str:
-        # 获取数据库schema信息
+        # 获取数据库schema信息，返回建表语句
         schema_info = []
         self.cursor.execute("""
-            SELECT TABLE_NAME, TABLE_COMMENT 
+            SELECT TABLE_NAME 
             FROM information_schema.TABLES 
             WHERE TABLE_SCHEMA = %s
         """, (self.db_config['database'],))
@@ -431,71 +433,44 @@ class NLDatabaseQuery:
         tables = self.cursor.fetchall()
         for table in tables:
             table_name = table['TABLE_NAME']
-            table_comment = table['TABLE_COMMENT']
 
-            # 获取表的列信息
-            self.cursor.execute("""
-                SELECT COLUMN_NAME, COLUMN_TYPE, COLUMN_COMMENT, IS_NULLABLE, COLUMN_KEY
-                FROM information_schema.COLUMNS 
-                WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
-            """, (self.db_config['database'], table_name))
-
-            columns = self.cursor.fetchall()
-            columns_info = []
-            for col in columns:
-                col_info = (f"字段名: {col['COLUMN_NAME']}, "
-                            f"类型: {col['COLUMN_TYPE']}, "
-                            f"说明: {col['COLUMN_COMMENT']}, "
-                            f"是否可空: {col['IS_NULLABLE']}, "
-                            f"键类型: {col['COLUMN_KEY']}")
-                columns_info.append(col_info)
-
-            table_info = f"表名: {table_name}\n表说明: {table_comment}\n字段信息:\n" + "\n".join(columns_info)
-            schema_info.append(table_info)
+            # 获取表的建表语句
+            self.cursor.execute(f"SHOW CREATE TABLE `{table_name}`")
+            create_table = self.cursor.fetchone()
+            if create_table and 'Create Table' in create_table:
+                schema_info.append(create_table['Create Table'])
 
         return "\n\n".join(schema_info)
 
+
     def get_specific_schema_info(self, tables: List[str]) -> str:
-        """获取指定表的schema信息"""
+        """获取指定表的schema信息，返回建表语句"""
         if not tables:
             return "未找到相关表的schema信息"
-
+    
         schema_info = []
         for table_name in tables:
-            # 获取表信息
+            # 检查表是否存在
             self.cursor.execute("""
-                SELECT TABLE_NAME, TABLE_COMMENT 
+                SELECT 1 
                 FROM information_schema.TABLES 
                 WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
             """, (self.db_config['database'], table_name))
-
-            table = self.cursor.fetchone()
-            if not table:
+            
+            if not self.cursor.fetchone():
                 continue
-
-            table_comment = table['TABLE_COMMENT']
-
-            # 获取表的列信息
-            self.cursor.execute("""
-                SELECT COLUMN_NAME, COLUMN_TYPE, COLUMN_COMMENT, IS_NULLABLE, COLUMN_KEY
-                FROM information_schema.COLUMNS 
-                WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
-            """, (self.db_config['database'], table_name))
-
-            columns = self.cursor.fetchall()
-            columns_info = []
-            for col in columns:
-                col_info = (f"字段名: {col['COLUMN_NAME']}, "
-                            f"类型: {col['COLUMN_TYPE']}, "
-                            f"说明: {col['COLUMN_COMMENT']}, "
-                            f"是否可空: {col['IS_NULLABLE']}, "
-                            f"键类型: {col['COLUMN_KEY']}")
-                columns_info.append(col_info)
-
-            table_info = f"表名: {table_name}\n表说明: {table_comment}\n字段信息:\n" + "\n".join(columns_info)
-            schema_info.append(table_info)
-
+            
+            # 获取表的建表语句
+            try:
+                self.cursor.execute(f"SHOW CREATE TABLE `{table_name}`")
+                create_table = self.cursor.fetchone()
+                if create_table and 'Create Table' in create_table:
+                    schema_info.append(create_table['Create Table'])
+            except Exception as e:
+                schema_info.append(f"获取表 {table_name} 的建表语句时出错: {str(e)}")
+        
         return "\n\n".join(schema_info) if schema_info else "未找到相关表的schema信息"
+
 
     def generate_sql_prompt(self, query: str, schema_info: str) -> List[Dict]:
         return [
@@ -518,8 +493,8 @@ class NLDatabaseQuery:
 
     def generate_answer_prompt(self, result: str, query: str, sql: str, schema_info: str) -> List[Dict]:
         return [
-            {"role": "system", "content": """你是一个SQL查询解读专家，负责将SQL查询结果转换为自然语言和可视化数据。"""},
-            {"role": "user", "content": f"""请帮我分析并格式化以下查询结果，以易于理解的方式展示：
+            {"role": "system", "content": """你是一个SQL查询解读专家，负责将SQL查询结果转换为自然语言分析和可视化数据。你擅长数据分析并能够推荐最合适的可视化方式。"""},
+            {"role": "user", "content": f"""请帮我分析以下查询结果，提供专业的数据洞察：
                 查询的问题：
                 {query}
                 查询用到的sql： 
@@ -530,33 +505,177 @@ class NLDatabaseQuery:
                 {result}
 
                 请提供【markdown格式】：
-                1. 表格形式的数据展示，不要有```markdown ```这样的标识符
-                2. 数据的简要分析
+                1. 数据的专业分析和洞察（无需展示原始数据表格，因为数据已直接显示在界面上）
+                2. 关键趋势、异常值或重要发现的解释
 
-                另外，请分析数据是否适合以饼图或柱状图展示，如果适合，请提供以下JSON格式的可视化配置：
+                另外，请分析数据特点，选择最合适的图表类型进行可视化，并提供以下JSON格式的可视化配置：【注意！！：1.json中不可含有任何注释，特别是value里面不能含有任何注释;2.若有多个图表，以json数组形式一并返回】
 
                 ```json
                 {{
-            "charts": [
+                  "charts": [
                     {{
-            "type": "pie",  
-                      "title": "图表标题",
-                      "description": "图表描述",
+                      "type": "图表类型1",  
+                      "title": "图表标题1",
+                      "description": "图表描述1",
                       "data": {{
-            "labels": ["标签1", "标签2", ...],  // 分类标签
-                        "values": [值1, 值2, ...],  // 对应的数值
+                        // 根据图表类型提供相应的数据配置
+                      }}
+                    }},
+                    {{
+                      "type": "图表类型2",  
+                      "title": "图表标题2",
+                      "description": "图表描述2",
+                      "data": {{
+                        // 根据图表类型提供相应的数据配置
                       }}
                     }}
                   ]
                 }}
                 ```
 
-                注意：
-                1. 只有当数据适合用饼图或柱状图展示时才提供JSON配置
-                2. 饼图适合展示占比关系，柱状图适合数据对比关系
-                3. 确保JSON格式正确，可以被解析
+                支持的图表类型和配置说明：
+
+                1. 饼图 (pie)：适合展示占比关系
+                ```json
+                {{
+                  "type": "pie",
+                  "data": {{
+                    "labels": ["类别1", "类别2", "类别3"],  // 分类标签
+                    "values": [30, 40, 50],  // 对应的数值
+                    "hole": 0.4,  // 可选，设置中心孔大小(0-1)，用于创建环形图
+                    "colors": ["#ff0000", "#00ff00", "#0000ff"]  // 可选，自定义颜色
+                  }}
+                }}
+                ```
+
+                2. 柱状图 (bar)：适合分类数据比较
+                ```json
+                {{
+                  "type": "bar",
+                  "data": {{
+                    "labels": ["类别1", "类别2", "类别3"],  // X轴标签
+                    "values": [30, 40, 50],  // Y轴数值
+                    "orientation": "v",  // 可选，'v'垂直柱状图(默认)，'h'水平柱状图
+                    "is_grouped": false,  // 可选，是否为分组柱状图
+                    "is_stacked": false,  // 可选，是否为堆叠柱状图
+                    "show_values": true,  // 可选，是否显示数值
+                    "colors": ["#ff0000", "#00ff00", "#0000ff"]  // 可选，自定义颜色
+                  }}
+                }}
+                ```
+
+                3. 折线图 (line)：适合时间序列和趋势分析
+                ```json
+                {{
+                  "type": "line",
+                  "data": {{
+                    "labels": ["2023-01", "2023-02", "2023-03"],  // X轴标签(通常是时间)
+                    "values": [30, 40, 50],  // Y轴数值
+                    "show_markers": true,  // 可选，是否显示数据点
+                    "line_shape": "linear",  // 可选，线型: linear, spline
+                    "x_axis_title": "时间",  // 可选，X轴标题
+                    "y_axis_title": "销售额",  // 可选，Y轴标题
+                    // 多系列数据(可选)
+                    "series": [
+                      {{
+                        "name": "系列1",
+                        "x": ["2023-01", "2023-02", "2023-03"],
+                        "y": [30, 40, 50],
+                        "line_width": 2
+                      }},
+                      {{
+                        "name": "系列2",
+                        "x": ["2023-01", "2023-02", "2023-03"],
+                        "y": [20, 30, 40],
+                        "line_width": 2
+                      }}
+                    ]
+                  }}
+                }}
+                ```
+
+                4. 散点图 (scatter)：适合探索两个变量的关系
+                ```json
+                {{
+                  "type": "scatter",
+                  "data": {{
+                    "x": [10, 20, 30, 40],  // X轴数值
+                    "y": [5, 15, 25, 35],   // Y轴数值
+                    "sizes": [10, 20, 30, 40],  // 可选，气泡大小
+                    "color_values": [1, 2, 3, 4],  // 可选，颜色维度
+                    "hover_names": ["点1", "点2", "点3", "点4"],  // 可选，悬停显示的标签
+                    "opacity": 0.7  // 可选，透明度
+                  }}
+                }}
+                ```
+
+                5. 面积图 (area)：展示趋势和累计关系
+                ```json
+                {{
+                  "type": "area",
+                  "data": {{
+                    "labels": ["2023-01", "2023-02", "2023-03"],  // X轴标签
+                    "values": [30, 40, 50],  // Y轴数值
+                    "is_stacked": true,  // 可选，是否堆叠
+                    "colors": ["#ff0000", "#00ff00", "#0000ff"]  // 可选，自定义颜色
+                  }}
+                }}
+                ```
+
+                6. 热力图 (heatmap)：展示二维数据的强度变化
+                ```json
+                {{
+                  "type": "heatmap",
+                  "data": {{
+                    "z_values": [[1, 2, 3], [4, 5, 6], [7, 8, 9]],  // 热力值(二维数组)
+                    "x_labels": ["A", "B", "C"],  // X轴标签
+                    "y_labels": ["X", "Y", "Z"],  // Y轴标签
+                    "color_scale": "Viridis",  // 可选，颜色比例尺
+                    "show_values": true  // 可选，是否显示数值
+                  }}
+                }}
+                ```
+
+                7. 雷达图 (radar)：多维度数据比较
+                ```json
+                {{
+                  "type": "radar",
+                  "data": {{
+                    "labels": ["指标1", "指标2", "指标3", "指标4", "指标5"],  // 维度标签
+                    "values": [80, 65, 90, 75, 85],  // 单个系列的值
+                    "max_value": 100,  // 可选，最大值
+                    // 多系列数据(可选)
+                    "series": [
+                      {{
+                        "name": "产品A",
+                        "values": [80, 65, 90, 75, 85]
+                      }},
+                      {{
+                        "name": "产品B",
+                        "values": [70, 75, 80, 65, 95]
+                      }}
+                    ]
+                  }}
+                }}
+                ```
+
+                8. 漏斗图 (funnel)：展示流程转化率
+                ```json
+                {{
+                  "type": "funnel",
+                  "data": {{
+                    "labels": ["访问", "注册", "下单", "支付", "复购"],  // 阶段标签
+                    "values": [1000, 800, 600, 400, 200],  // 各阶段数值
+                    "text_info": "value+percent"  // 可选，显示的文本信息
+                  }}
+                }}
+                ```
+
+                请根据数据特点选择最合适的图表类型，最多提供2个图表配置。确保JSON格式正确，可以被解析。如果数据不适合可视化，可以不提供图表配置。
                 """}
         ]
+
+
 
     # 清理大模型返回的SQL文本，去除代码块标记和其他格式
     def clean_sql_response(self, response_text: str):
@@ -583,6 +702,11 @@ class NLDatabaseQuery:
     def extract_chart_config(self, response_text: str):
         """从响应文本中提取图表配置JSON"""
         import re
+        with st.expander("清洗前：", expanded=False):
+            st.write(response_text)
+        response_text = self.clean_json_comments(response_text)
+        with st.expander("清洗后：", expanded=False):
+            st.write(response_text)
         json_pattern = r'```json\s*(.*?)\s*```'
         matches = re.findall(json_pattern, response_text, re.DOTALL)
 
@@ -661,6 +785,8 @@ class NLDatabaseQuery:
 
             # 生成并发送prompt到OpenAI
             messages = self.generate_sql_prompt(query, schema_info)
+            with st.expander("prompt信息：", expanded=False):
+                st.write(messages)
             response = self.client.chat.completions.create(
                 model="glm-4-plus",
                 messages=messages
@@ -678,18 +804,26 @@ class NLDatabaseQuery:
                 if not self.is_valid_query_result(result) and max_retries > 0:
                     st.warning(f"生成的SQL执行失败或返回为空，将尝试重新生成（剩余重试次数：{max_retries}）")
                     failed_sql = sql
-                    return self._retry_query_generation(query, max_retries, failed_sql, error_info)
+                    return self._retry_query_generation(query, max_retries - 1, failed_sql, error_info)
             except Exception as e:
                 error_info = str(e)
                 st.error(f"SQL执行错误: {error_info}")
                 if max_retries > 0:
                     st.warning(f"将尝试重新生成SQL（剩余重试次数：{max_retries}）")
                     failed_sql = sql
-                    return self._retry_query_generation(query, max_retries, failed_sql, error_info)
+                    return self._retry_query_generation(query, max_retries - 1, failed_sql, error_info)
                 result = []
 
         # 检查查询是否成功并返回有效结果
         query_successful = self.is_valid_query_result(result)
+
+        # 查询执行成功后，直接显示数据表格
+        if query_successful == False:
+            return None
+        st.subheader("查询结果数据")
+        # 转换为DataFrame并显示
+        df = pd.DataFrame(result)
+        st.dataframe(df)  # 直接显示数据表格
 
         # 提取SQL中使用的表，并获取相关的schema信息
         tables = self.extract_tables_from_sql(sql)
@@ -770,6 +904,8 @@ class NLDatabaseQuery:
                 请分析上述错误，生成一个更准确的SQL查询。
                 """}
         ]
+        with st.expander("重试生成SQL的prompt信息：", expanded=False):
+            st.write(retry_messages)
 
         # 生成新的SQL
         response = self.client.chat.completions.create(
@@ -790,32 +926,42 @@ class NLDatabaseQuery:
             if not self.is_valid_query_result(result) and max_retries > 1:
                 st.warning(f"重试生成的SQL执行仍然失败或返回为空，将继续重试（剩余重试次数：{max_retries - 1}）")
                 return self._retry_query_generation(query, max_retries - 1, sql, None)
+            elif max_retries <= 0:
+                st.error("重试生成SQL次数已用完，无法生成有效的SQL")
+                return None, None, None
         except Exception as e:
+            #  TODO error_info目前无法携带，待改进
             error_info = str(e)
             st.error(f"重试SQL执行错误: {error_info}")
             if max_retries > 1:
                 st.warning(f"将继续重试（剩余重试次数：{max_retries - 1}）")
                 return self._retry_query_generation(query, max_retries - 1, sql, error_info)
+            elif max_retries <= 0:
+                st.error("重试生成SQL次数已用完，无法生成有效的SQL")
+                return None, None, None
             result = []
 
         # 检查查询是否成功并返回有效结果
         query_successful = self.is_valid_query_result(result)
 
-        # 生成回答
-        schema_info = self.get_schema_info()
-        messages1 = self.generate_answer_prompt(result, query, sql, schema_info)
-        with st.expander("prompt信息：", expanded=False):
-            st.write(messages1)
-        response1 = self.client.chat.completions.create(
-            model="glm-4-plus",
-            messages=messages1
-        )
 
-        response_text = response1.choices[0].message.content.strip()
-        chart_config = self.extract_chart_config(response_text)
 
         # 只有在查询成功时才将SQL保存到缓存
         if query_successful:
+            # 生成回答
+            # 提取SQL中使用的表，并获取相关的schema信息
+            tables = self.extract_tables_from_sql(sql)
+            specific_schema_info = self.get_specific_schema_info(tables)
+            messages1 = self.generate_answer_prompt(result, query, sql, specific_schema_info)
+            with st.expander("prompt信息：", expanded=False):
+                st.write(messages1)
+            response1 = self.client.chat.completions.create(
+                model="glm-4-plus",
+                messages=messages1
+            )
+
+            response_text = response1.choices[0].message.content.strip()
+            chart_config = self.extract_chart_config(response_text)
             self.cache.save_to_cache(
                 query,
                 self.db_config['database'],
@@ -827,20 +973,41 @@ class NLDatabaseQuery:
 
         return response_text, chart_config, result
     def display_result(self, markdown_text, chart_config=None, query_result=None):
-        # 显示文本回答
-#         content = f"""
-# ### 答案：
-# {markdown_text}
-#         """
-#         st.write(content)
-
+        with st.expander("返回的全文：", expanded=False):
+            st.write(markdown_text)
         # 如果有图表配置，显示图表
         if chart_config and 'charts' in chart_config and query_result:
             self.display_charts(chart_config, query_result)
 
+    def clean_json_comments(self, json_str):
+        """
+        清洗JSON字符串中的注释
+
+        Args:
+            json_str (str): 可能包含注释的JSON字符串
+
+        Returns:
+            str: 清洗后的JSON字符串，移除了所有注释
+        """
+        import re
+
+        # 移除单行注释 (// 后面的内容)
+        cleaned_str = re.sub(r'//.*?(\n|$)', r'\1', json_str)
+
+        # 移除多行注释 (/* ... */ 格式)
+        cleaned_str = re.sub(r'/\*.*?\*/', '', cleaned_str, flags=re.DOTALL)
+
+        # 移除行尾空白
+        cleaned_str = re.sub(r'\s+$', '', cleaned_str, flags=re.MULTILINE)
+
+        # 处理可能出现的连续空行
+        cleaned_str = re.sub(r'\n\s*\n', '\n', cleaned_str)
+
+        return cleaned_str
+
+
     def display_charts(self, chart_config, query_result):
-        """显示图表"""
-        # 转换查询结果为DataFrame以便处理
+        """显示图表，支持多种图表类型"""
         df = pd.DataFrame(query_result)
 
         for chart in chart_config.get('charts', []):
@@ -856,23 +1023,231 @@ class NLDatabaseQuery:
             labels = data.get('labels', [])
             values = data.get('values', [])
 
+            # 饼图
             if chart_type == 'pie':
                 fig = px.pie(
                     names=labels,
                     values=values,
-                    title=title
+                    title=title,
+                    hole=data.get('hole', 0),  # 支持环形图
+                    color_discrete_sequence=data.get('colors')  # 自定义颜色
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
+            # 树状图
             elif chart_type == 'treemap':
                 parents = data.get('parents', [''] * len(labels))
                 fig = px.treemap(
                     names=labels,
                     values=values,
                     parents=parents,
-                    title=title
+                    title=title,
+                    color_discrete_sequence=data.get('colors')
                 )
                 st.plotly_chart(fig, use_container_width=True)
+
+            # 柱状图
+            elif chart_type == 'bar':
+                # 支持水平和垂直柱状图
+                orientation = data.get('orientation', 'v')  # 'v'为垂直，'h'为水平
+
+                if orientation == 'h':
+                    fig = px.bar(
+                        y=labels,
+                        x=values,
+                        title=title,
+                        orientation='h',
+                        color=data.get('color_by'),  # 按类别着色
+                        color_discrete_sequence=data.get('colors'),
+                        text_auto=data.get('show_values', True)  # 显示数值
+                    )
+                else:
+                    fig = px.bar(
+                        x=labels,
+                        y=values,
+                        title=title,
+                        color=data.get('color_by'),
+                        color_discrete_sequence=data.get('colors'),
+                        text_auto=data.get('show_values', True)
+                    )
+
+                # 设置条形图样式
+                if data.get('is_grouped', False):
+                    # 分组柱状图
+                    fig.update_layout(barmode='group')
+                elif data.get('is_stacked', False):
+                    # 堆叠柱状图
+                    fig.update_layout(barmode='stack')
+
+                st.plotly_chart(fig, use_container_width=True)
+
+            # 折线图
+            elif chart_type == 'line':
+                # 处理多条折线的情况
+                if 'series' in data:
+                    series_data = data.get('series', [])
+                    fig = go.Figure()
+
+                    for series in series_data:
+                        fig.add_trace(go.Scatter(
+                            x=series.get('x', labels),
+                            y=series.get('y', []),
+                            mode='lines+markers' if data.get('show_markers', True) else 'lines',
+                            name=series.get('name', ''),
+                            line=dict(width=series.get('line_width', 2))
+                        ))
+                else:
+                    # 单条折线
+                    fig = px.line(
+                        x=labels,
+                        y=values,
+                        title=title,
+                        markers=data.get('show_markers', True),
+                        line_shape=data.get('line_shape', 'linear')  # linear, spline, hv, vh, hvh, vhv
+                    )
+
+                # 设置坐标轴标题
+                fig.update_layout(
+                    xaxis_title=data.get('x_axis_title', ''),
+                    yaxis_title=data.get('y_axis_title', '')
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
+
+            # 散点图
+            elif chart_type == 'scatter':
+                # 获取第三维度数据（如果有）
+                sizes = data.get('sizes', None)
+                color_values = data.get('color_values', None)
+
+                fig = px.scatter(
+                    x=data.get('x', labels),
+                    y=data.get('y', values),
+                    size=sizes,  # 气泡大小（可选）
+                    color=color_values,  # 颜色维度（可选）
+                    title=title,
+                    hover_name=data.get('hover_names'),  # 悬停显示的标签
+                    size_max=data.get('size_max', 20),  # 最大气泡大小
+                    opacity=data.get('opacity', 0.7)  # 透明度
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
+
+            # 面积图
+            elif chart_type == 'area':
+                fig = px.area(
+                    x=labels,
+                    y=values,
+                    title=title,
+                    color_discrete_sequence=data.get('colors')
+                )
+
+                # 设置是否堆叠
+                if not data.get('is_stacked', True):
+                    fig.update_layout(groupnorm='fraction')  # 百分比堆叠
+
+                st.plotly_chart(fig, use_container_width=True)
+
+            # 热力图
+            elif chart_type == 'heatmap':
+                # 热力图需要二维数据
+                z_values = data.get('z_values', [])  # 热力值
+                x_labels = data.get('x_labels', labels)  # x轴标签
+                y_labels = data.get('y_labels', [])  # y轴标签
+
+                fig = px.imshow(
+                    z_values,
+                    x=x_labels,
+                    y=y_labels,
+                    color_continuous_scale=data.get('color_scale', 'Viridis'),
+                    title=title
+                )
+
+                # 显示数值
+                if data.get('show_values', True):
+                    fig.update_traces(text=z_values, texttemplate="%{text}")
+
+                st.plotly_chart(fig, use_container_width=True)
+
+            # 雷达图
+            elif chart_type == 'radar':
+                # 雷达图特殊处理
+                categories = labels
+
+                # 处理多个雷达系列
+                if 'series' in data:
+                    series_data = data.get('series', [])
+                    fig = go.Figure()
+
+                    for series in series_data:
+                        fig.add_trace(go.Scatterpolar(
+                            r=series.get('values', []),
+                            theta=categories,
+                            fill='toself',
+                            name=series.get('name', '')
+                        ))
+                else:
+                    # 单个雷达系列
+                    fig = go.Figure(go.Scatterpolar(
+                        r=values,
+                        theta=categories,
+                        fill='toself'
+                    ))
+
+                fig.update_layout(
+                    polar=dict(
+                        radialaxis=dict(
+                            visible=True,
+                            range=[0, data.get('max_value', None)]
+                        )
+                    ),
+                    title=title
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
+
+            # 箱线图
+            elif chart_type == 'box':
+                fig = px.box(
+                    x=data.get('group_by', None),  # 分组变量
+                    y=values,
+                    title=title,
+                    points=data.get('show_points', 'outliers')  # all, outliers, False
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
+
+            # 漏斗图
+            elif chart_type == 'funnel':
+                fig = go.Figure(go.Funnel(
+                    y=labels,
+                    x=values,
+                    textinfo=data.get('text_info', 'value+percent')
+                ))
+
+                fig.update_layout(title=title)
+                st.plotly_chart(fig, use_container_width=True)
+
+            # 瀑布图
+            elif chart_type == 'waterfall':
+                measure = data.get('measures', ['relative'] * len(labels))
+
+                fig = go.Figure(go.Waterfall(
+                    name=title,
+                    orientation='v',
+                    measure=measure,
+                    x=labels,
+                    y=values,
+                    connector={"line": {"color": "rgb(63, 63, 63)"}},
+                ))
+
+                fig.update_layout(title=title)
+                st.plotly_chart(fig, use_container_width=True)
+
+            # 如果是未知的图表类型，显示警告
+            else:
+                st.warning(f"不支持的图表类型: {chart_type}")
+
 
 
 def init_session_state():
