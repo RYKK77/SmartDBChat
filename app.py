@@ -7,6 +7,7 @@ import pandas as pd
 import plotly.express as px
 import sqlite3
 import hashlib
+import requests
 from datetime import datetime, timedelta
 
 from pygments.lexers import go
@@ -20,6 +21,7 @@ class SemanticQueryCache:
         self.client = None  # 将在需要时初始化
         self.embedding_available = True  # 标记嵌入API是否可用
         self._init_cache_db()
+        self.base_embedding_url = "http://localhost:11434"  # 在这里定义base_url
 
     def set_api_client(self, client):
         """设置API客户端"""
@@ -72,11 +74,22 @@ class SemanticQueryCache:
             return None
 
         try:
-            response = self.client.embeddings.create(
-                model="embedding-2",
-                input=text
+            # 使用Ollama API获取嵌入向量
+            response = requests.post(
+                f"{self.base_embedding_url}/api/embeddings",
+                json={
+                    "model": "nomic-embed-text",  # Ollama的嵌入模型
+                    "prompt": text
+                }
             )
-            return response.data[0].embedding
+
+            if response.status_code == 200:
+                embedding_data = response.json()
+                return embedding_data["embedding"]
+            else:
+                st.warning(f"API请求失败，状态码: {response.status_code}")
+                return None
+
         except Exception as e:
             st.warning(f"获取嵌入向量失败: {str(e)}")
             return None
@@ -421,27 +434,66 @@ class NLDatabaseQuery:
         # 去重
         return list(set(tables))
 
-    def get_schema_info(self) -> str:
-        # 获取数据库schema信息，返回建表语句
+    def get_schema_info(self, tables=None):
+        """获取数据库schema信息，返回建表语句，支持表过滤"""
         schema_info = []
-        self.cursor.execute("""
-            SELECT TABLE_NAME 
-            FROM information_schema.TABLES 
-            WHERE TABLE_SCHEMA = %s
-        """, (self.db_config['database'],))
 
-        tables = self.cursor.fetchall()
-        for table in tables:
-            table_name = table['TABLE_NAME']
+        if tables:
+            # 只获取指定表的建表语句
+            for table_name in tables:
+                try:
+                    # 检查表是否存在
+                    self.cursor.execute("""
+                        SELECT 1 
+                        FROM information_schema.TABLES 
+                        WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
+                    """, (self.db_config['database'], table_name))
 
-            # 获取表的建表语句
-            self.cursor.execute(f"SHOW CREATE TABLE `{table_name}`")
-            create_table = self.cursor.fetchone()
-            if create_table and 'Create Table' in create_table:
-                schema_info.append(create_table['Create Table'])
+                    result = self.cursor.fetchone()
+                    # 确保完全消费结果集
+                    self.cursor.fetchall()
+                    
+                    if result:
+                        # 获取表的建表语句
+                        self.cursor.execute(f"SHOW CREATE TABLE `{table_name}`")
+                        create_table = self.cursor.fetchone()
+                        # 确保完全消费结果集
+                        self.cursor.fetchall()
+                        
+                        if create_table and 'Create Table' in create_table:
+                            schema_info.append(create_table['Create Table'])
+                except Exception as e:
+                    st.warning(f"获取表 {table_name} 的schema信息时出错: {str(e)}")
+                    # 尝试重置连接状态
+                    try:
+                        self.cursor.fetchall()
+                    except:
+                        pass
+        else:
+            # 原始逻辑 - 获取所有表
+            self.cursor.execute("""
+                SELECT TABLE_NAME 
+                FROM information_schema.TABLES 
+                WHERE TABLE_SCHEMA = %s
+            """, (self.db_config['database'],))
+
+            tables = self.cursor.fetchall()
+            # 确保完全消费结果集
+            self.cursor.fetchall()
+            
+            for table in tables:
+                table_name = table['TABLE_NAME']
+
+                # 获取表的建表语句
+                self.cursor.execute(f"SHOW CREATE TABLE `{table_name}`")
+                create_table = self.cursor.fetchone()
+                # 确保完全消费结果集
+                self.cursor.fetchall()
+                
+                if create_table and 'Create Table' in create_table:
+                    schema_info.append(create_table['Create Table'])
 
         return "\n\n".join(schema_info)
-
 
     def get_specific_schema_info(self, tables: List[str]) -> str:
         """获取指定表的schema信息，返回建表语句"""
@@ -457,31 +509,56 @@ class NLDatabaseQuery:
                 WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
             """, (self.db_config['database'], table_name))
             
-            if not self.cursor.fetchone():
+            result = self.cursor.fetchone()
+            # 确保完全消费结果集
+            self.cursor.fetchall()
+            
+            if not result:
                 continue
             
             # 获取表的建表语句
             try:
                 self.cursor.execute(f"SHOW CREATE TABLE `{table_name}`")
                 create_table = self.cursor.fetchone()
+                # 确保完全消费结果集
+                self.cursor.fetchall()
+                
                 if create_table and 'Create Table' in create_table:
                     schema_info.append(create_table['Create Table'])
             except Exception as e:
                 schema_info.append(f"获取表 {table_name} 的建表语句时出错: {str(e)}")
+                # 尝试重置连接状态
+                try:
+                    self.cursor.fetchall()
+                except:
+                    pass
         
         return "\n\n".join(schema_info) if schema_info else "未找到相关表的schema信息"
 
-
     def generate_sql_prompt(self, query: str, schema_info: str) -> List[Dict]:
+        """生成提示信息，引导模型生成SQL查询，强调模块约束"""
+        # 检测是否使用了模块过滤
+        is_filtered = len(schema_info.splitlines()) < 10000  # 粗略估计全库表结构行数
+
+        module_hint = ""
+        if is_filtered:
+            module_hint = """
+            注意：当前只提供了与用户查询意图相关的表结构信息，请只使用提供的表结构生成SQL，不要尝试使用不在schema中的表。
+            """
+
         return [
-            {"role": "system", "content": """你是一个SQL专家，负责将自然语言转换为SQL查询语句。
+            {"role": "system", "content": f"""你是一个SQL专家，负责将自然语言转换为SQL查询语句。
                 请注意：
                 1. 直接返回SQL语句，不要包含任何其他信息。
-                2. 现在使用的是mysql数据库，确保SQL语句语法正确
+                2. 现在使用的是MySQL 5.7.37数据库，确保SQL语句语法正确
                 3. 使用提供的schema信息构建查询
                 4. 注意使用适当的表连接和条件
                 5. 查询的表头都需要有中文注释，不要使用表别名
-                6. 确保查询安全，避免SQL注入风险"""},
+                6. 确保查询安全，避免SQL注入风险
+                7. 检查表名和字段名是否正确，确保它们存在于schema中
+                8. 考虑可能的数据类型转换问题
+                9. 确保WHERE条件合理
+                {module_hint}"""},
             {"role": "user", "content": f"""
                 数据库Schema信息如下：
                 {schema_info}
@@ -740,6 +817,11 @@ class NLDatabaseQuery:
         try:
             self.cursor.execute(sql)
             result = self.cursor.fetchall()
+            # 确保完全消费结果集，避免Commands out of sync错误
+            if not result:
+                # 即使没有结果也调用一次fetchall确保结果集被消费
+                self.cursor.fetchall()
+                
             if result:
                 st.success(f"查询成功，返回 {len(result)} 条记录")
             else:
@@ -747,9 +829,19 @@ class NLDatabaseQuery:
             return result
         except Exception as e:
             st.error(f"查询执行错误: {str(e)}")
+            # 发生错误时，尝试重置连接状态
+            try:
+                # 尝试消费任何未处理的结果集
+                self.cursor.fetchall()
+            except:
+                # 如果重置失败，重新建立连接
+                try:
+                    self.connect_db()
+                except Exception as conn_error:
+                    st.error(f"重新连接数据库失败: {str(conn_error)}")
             return []
 
-    def natural_language_query(self, query: str, max_retries: int = 2) -> tuple:
+    def natural_language_query(self, query: str, module: str = None, max_retries: int = 2) -> tuple:
         """执行自然语言查询，支持缓存，只缓存成功的查询，支持自动重试"""
         # 首先尝试从缓存中获取SQL（支持语义相似性匹配）
         cached_sql = self.cache.get_from_cache(
@@ -770,20 +862,32 @@ class NLDatabaseQuery:
                 if not self.is_valid_query_result(result) and max_retries > 0:
                     st.warning(f"缓存的SQL执行失败或返回为空，将尝试重新生成SQL（剩余重试次数：{max_retries}）")
                     failed_sql = sql
-                    return self._retry_query_generation(query, max_retries, failed_sql, error_info)
+                    return self._retry_query_generation(query, max_retries, failed_sql, error_info, module)
             except Exception as e:
                 error_info = str(e)
                 st.error(f"缓存的SQL执行错误: {error_info}")
                 if max_retries > 0:
                     st.warning(f"将尝试重新生成SQL（剩余重试次数：{max_retries}）")
                     failed_sql = sql
-                    return self._retry_query_generation(query, max_retries, failed_sql, error_info)
+                    return self._retry_query_generation(query, max_retries - 1, failed_sql, error_info, module)
                 result = []
         else:
             # 如果缓存中没有，则生成新的SQL
-            schema_info = self.get_schema_info()
 
-            # 生成并发送prompt到OpenAI
+            # 【新增代码】根据模块过滤表
+            if module:
+                relevant_tables = self.get_tables_by_module(module)
+                if relevant_tables:
+                    st.info(f"🔍 根据业务模块 '{module}' 过滤表，缩小查询范围")
+                    schema_info = self.get_schema_info(relevant_tables)
+                else:
+                    st.warning(f"⚠️ 未找到业务模块 '{module}' 的相关表，将使用所有表")
+                    schema_info = self.get_schema_info()
+            else:
+                st.warning("⚠️ 未找到业务模块，将使用所有表")
+                schema_info = self.get_schema_info()
+
+            # 生成并发送prompt到模型
             messages = self.generate_sql_prompt(query, schema_info)
             with st.expander("prompt信息：", expanded=False):
                 st.write(messages)
@@ -795,7 +899,6 @@ class NLDatabaseQuery:
             sql = response.choices[0].message.content.strip()
             sql = self.clean_sql_response(sql)
             st.code(f"生成的SQL查询:\n{sql}", language="sql")
-
             # 执行SQL查询
             try:
                 result = self.execute_query(sql)
@@ -804,14 +907,14 @@ class NLDatabaseQuery:
                 if not self.is_valid_query_result(result) and max_retries > 0:
                     st.warning(f"生成的SQL执行失败或返回为空，将尝试重新生成（剩余重试次数：{max_retries}）")
                     failed_sql = sql
-                    return self._retry_query_generation(query, max_retries - 1, failed_sql, error_info)
+                    return self._retry_query_generation(query, max_retries - 1, failed_sql, error_info, module)
             except Exception as e:
                 error_info = str(e)
                 st.error(f"SQL执行错误: {error_info}")
                 if max_retries > 0:
                     st.warning(f"将尝试重新生成SQL（剩余重试次数：{max_retries}）")
                     failed_sql = sql
-                    return self._retry_query_generation(query, max_retries - 1, failed_sql, error_info)
+                    return self._retry_query_generation(query, max_retries - 1, failed_sql, error_info, module)
                 result = []
 
         # 检查查询是否成功并返回有效结果
@@ -828,7 +931,6 @@ class NLDatabaseQuery:
         # 提取SQL中使用的表，并获取相关的schema信息
         tables = self.extract_tables_from_sql(sql)
         specific_schema_info = self.get_specific_schema_info(tables)
-
         # 生成回答，只传递相关的schema信息
         messages1 = self.generate_answer_prompt(result, query, sql, specific_schema_info)
         with st.expander("prompt信息：", expanded=False):
@@ -839,20 +941,20 @@ class NLDatabaseQuery:
         # 创建一个空的容器用于显示流式输出
         answer_container = st.empty()
         response_text = ""
-        
+
         # 使用流式传输方式获取回答
         stream = self.client.chat.completions.create(
             model="glm-4-plus",
             messages=messages1,
             stream=True
         )
-        
+
         # 逐步接收并显示回答
         for chunk in stream:
             if chunk.choices[0].delta.content is not None:
                 response_text += chunk.choices[0].delta.content
                 answer_container.markdown(response_text)
-        
+
         # 提取图表配置
         chart_config = self.extract_chart_config(response_text)
 
@@ -871,12 +973,21 @@ class NLDatabaseQuery:
         return response_text, chart_config, result
 
     def _retry_query_generation(self, query: str, max_retries: int, failed_sql: str = None,
-                                error_info: str = None) -> tuple:
-        """重试生成SQL查询，包含上一次失败的SQL和错误信息"""
-        # 获取schema信息
-        schema_info = self.get_schema_info()
-
-        # 添加更详细的错误信息到提示中，包括上一次失败的SQL和错误信息
+                                error_info: str = None, module: str = None) -> tuple:
+        """重试生成SQL查询，包含上一次失败的SQL和错误信息，支持业务模块过滤"""
+        if max_retries <= 0:
+            st.error("重试次数已用完，无法生成SQL查询")
+            return None, None, None
+        # 【新增代码】获取schema信息，使用模块过滤
+        if module:
+            relevant_tables = self.get_tables_by_module(module)
+            if relevant_tables:
+                schema_info = self.get_schema_info(relevant_tables)
+            else:
+                schema_info = self.get_schema_info()
+        else:
+            schema_info = self.get_schema_info()
+        # 添加更详细的错误信息到提示中
         retry_messages = [
             {"role": "system", "content": """你是一个SQL专家，负责将自然语言转换为SQL查询语句。
                 之前生成的SQL查询执行失败或返回为空，请尝试生成一个更准确的SQL查询。
@@ -893,14 +1004,11 @@ class NLDatabaseQuery:
             {"role": "user", "content": f"""
                 数据库Schema信息如下：
                 {schema_info}
-
                 请将以下问题转换为SQL查询语句：
                 {query}
-
                 上一次生成的SQL查询失败，详情如下：
                 SQL语句: {failed_sql if failed_sql else "无"}
                 错误信息: {error_info if error_info else "查询执行成功，但没有返回数据"}
-
                 请分析上述错误，生成一个更准确的SQL查询。
                 """}
         ]
@@ -944,6 +1052,16 @@ class NLDatabaseQuery:
         # 检查查询是否成功并返回有效结果
         query_successful = self.is_valid_query_result(result)
 
+        # 查询执行成功后，直接显示数据表格
+        if query_successful == False:
+            return None
+        st.subheader("查询结果数据")
+        # 转换为DataFrame并显示
+        df = pd.DataFrame(result)
+        st.dataframe(df)  # 直接显示数据表格
+
+        response_text = ""
+        chart_config = ""
 
 
         # 只有在查询成功时才将SQL保存到缓存
@@ -955,12 +1073,29 @@ class NLDatabaseQuery:
             messages1 = self.generate_answer_prompt(result, query, sql, specific_schema_info)
             with st.expander("prompt信息：", expanded=False):
                 st.write(messages1)
-            response1 = self.client.chat.completions.create(
+            # response1 = self.client.chat.completions.create(
+            #     model="glm-4-plus",
+            #     messages=messages1
+            # )
+
+            st.write("### 答案：")
+            # 创建一个空的容器用于显示流式输出
+            answer_container = st.empty()
+
+            # 使用流式传输方式获取回答
+            stream = self.client.chat.completions.create(
                 model="glm-4-plus",
-                messages=messages1
+                messages=messages1,
+                stream=True
             )
 
-            response_text = response1.choices[0].message.content.strip()
+            # 逐步接收并显示回答
+            for chunk in stream:
+                if chunk.choices[0].delta.content is not None:
+                    response_text += chunk.choices[0].delta.content
+                    answer_container.markdown(response_text)
+
+
             chart_config = self.extract_chart_config(response_text)
             self.cache.save_to_cache(
                 query,
@@ -978,6 +1113,36 @@ class NLDatabaseQuery:
         # 如果有图表配置，显示图表
         if chart_config and 'charts' in chart_config and query_result:
             self.display_charts(chart_config, query_result)
+
+    def get_tables_by_module(self, module):
+        """从sys_tables.db获取指定模块的表名列表"""
+        try:
+            # 连接sys_tables.db数据库
+            sys_conn = sqlite3.connect("./sys_tables.db")
+            sys_cursor = sys_conn.cursor()
+
+            # 查询指定模块的所有表
+            sys_cursor.execute(
+                "SELECT table_name, description FROM system_tables WHERE module = ?",
+                (module,)
+            )
+
+            # 获取表名和描述
+            tables_info = sys_cursor.fetchall()
+            # 确保完全消费结果集
+            sys_cursor.fetchall()
+            
+            sys_conn.close()
+
+            if tables_info:
+                st.success(f"✅ 从模块 '{module}' 中找到 {len(tables_info)} 个相关表")
+                return [row[0] for row in tables_info]
+            else:
+                st.warning(f"⚠️ 在模块 '{module}' 中未找到任何表")
+                return []
+        except Exception as e:
+            st.error(f"获取模块表信息失败: {str(e)}")
+            return []
 
     def clean_json_comments(self, json_str):
         """
@@ -1275,13 +1440,28 @@ def create_query_system(db_config: Dict, api_key: str):
     except Exception as e:
         st.error(f"创建查询系统失败: {str(e)}")
         return None
-
+def get_all_modules():
+    """获取所有业务模块"""
+    try:
+        conn = sqlite3.connect("./sys_tables.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT module FROM system_tables ORDER BY module")
+        modules = [row[0] for row in cursor.fetchall()]
+        conn.close()
+        return modules
+    except Exception as e:
+        st.error(f"获取业务模块失败: {str(e)}")
+        return []
 
 def main():
     st.set_page_config(page_title="SmartDBChat - 自然语言数据库查询", layout="wide")
 
     # 初始化session state
     init_session_state()
+
+    # 初始化模块选择状态
+    if 'selected_module' not in st.session_state:
+        st.session_state.selected_module = None
 
     st.title("SmartDBChat - 自然语言数据库查询")
 
@@ -1330,6 +1510,21 @@ def main():
                     query_system = create_query_system(db_config, api_key)
                     if query_system:
                         st.success("数据库连接成功！")
+        # 【新增代码】添加模块选择
+        if st.session_state.query_system:
+            st.subheader("业务模块过滤")
+            # 获取所有业务模块
+            modules = get_all_modules()
+            selected_module = st.selectbox(
+                "选择业务模块",
+                ["全部"] + modules,
+                help="选择业务模块可以减少LLM处理的表数量，提高生成SQL的准确性"
+            )
+
+            if selected_module == "全部":
+                st.session_state.selected_module = None
+            else:
+                st.session_state.selected_module = selected_module
 
         # 缓存管理
         if st.session_state.cache_system:
@@ -1343,30 +1538,36 @@ def main():
                 message = st.session_state.cache_system.clear_cache()
                 st.success(message)
 
-
     # 主界面
     if st.session_state.query_system:
-        # 查询输入
+        # 查询输入区域
         query = st.text_area("请输入你的问题", height=100)
 
-        # 添加重试次数选项
-        col1, col2 = st.columns([3, 1])
-        with col2:
+        # 添加重试次数和当前选择的模块显示
+        col1, col2, col3 = st.columns([2, 2, 1])
+        with col1:
+            if st.session_state.selected_module:
+                st.info(f"当前业务模块: {st.session_state.selected_module}")
+            else:
+                st.info("当前查询范围: 所有表")
+
+        with col3:
             max_retries = st.number_input("最大重试次数", min_value=0, max_value=5, value=2,
                                           help="如果SQL查询失败或返回为空，自动重试生成SQL的最大次数")
 
         if st.button("查询") and query:
             with st.spinner("正在处理查询..."):
                 try:
+                    # 传入选择的模块
+                    module = st.session_state.selected_module
                     markdown_text, chart_config, query_result = st.session_state.query_system.natural_language_query(
-                        query, max_retries=max_retries)
+                        query, module=module, max_retries=max_retries)
 
                     # 显示结果
-                    st.session_state.query_system.display_result(markdown_text, chart_config, query_result)
-
-                    # 显示原始数据
-                    with st.expander("查看原始数据"):
-                        st.write(query_result)
+                    if markdown_text and query_result:
+                        st.session_state.query_system.display_result(markdown_text, chart_config, query_result)
+                    else:
+                        st.error("查询未返回有效结果")
                 except Exception as e:
                     st.error(f"查询处理失败: {str(e)}")
     else:
