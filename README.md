@@ -67,7 +67,6 @@ SmartDBChat/
 │   ├── charts.py            # 图表 JSON 解析、确定性图表推荐与图表配置构建器
 │   ├── engine.py            # SmartDBEngine 核心查询编排引擎
 │   └── eval/                # NL2SQL 基准评测套件（Eval Harness）
-├── app.py                   # 传统 Streamlit 前端入口（兼容保留）
 ├── tests/                   # 单元测试与端到端集成测试套件
 ├── pyproject.toml           # uv 项目与依赖配置
 ├── uv.lock                  # uv 依赖锁文件
@@ -113,13 +112,7 @@ cd frontend && npm run dev
 uv run python -m smartdbchat.mcp_server
 ```
 
-5. 启动传统 Streamlit 界面（兼容保留）：
-
-```bash
-uv run streamlit run app.py
-```
-
-6. 运行完整测试套件：
+5. 运行完整测试套件：
 
 ```bash
 uv run pytest -v
