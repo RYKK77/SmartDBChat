@@ -260,6 +260,19 @@ def test_agent_plain_sql_fallback_and_unsafe_block():
     assert "UnsafeSQLError" in (res_bad.error or "")
     assert db2.executed_sqls == []
 
+    # 自然语言闲聊回复不应触发 execute_sql_fallback 语法报错
+    db3 = FakeDatabase()
+    greeting_text = "你好！我是校园教务与消费数据分析助手，可以帮你查询和分析这个数据库里的信息。"
+    llm_chat = FakeLLMClient([_make_completion_response(content=greeting_text)])
+    agent3 = NL2SQLAgent(db=db3, llm_client=llm_chat, model="gpt-4o-mini")
+    res_chat = agent3.run("你好啊")
+    assert res_chat.success is False
+    assert res_chat.sql == ""
+    assert res_chat.error is None
+    assert res_chat.final_message == greeting_text
+    assert db3.executed_sqls == []
+    assert res_chat.steps[0].tool_name is None
+
 
 def test_agent_history_max_sql_executions_and_disable_explain():
     db = FakeDatabase()

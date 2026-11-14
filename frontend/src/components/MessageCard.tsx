@@ -264,6 +264,13 @@ export function MessageCard({
     res.status === 'rejected' ||
     res.status === 'empty_result'
 
+  const statusLabelMap: Record<string, string> = {
+    off_topic: '日常对话',
+    clarification_needed: '需要澄清',
+    rejected: '安全拦截',
+    empty_result: '无匹配数据',
+  }
+
   return (
     <div className="msg-row">
       <div className="msg-avatar">AI</div>
@@ -276,7 +283,9 @@ export function MessageCard({
                 {res.row_count} 行结果
               </span>
             ) : isWarningStatus ? (
-              <span className="pill pill-warning">{res.status}</span>
+              <span className={`pill ${res.status === 'off_topic' ? 'pill-info' : 'pill-warning'}`}>
+                {statusLabelMap[res.status] || res.status}
+              </span>
             ) : (
               <span className="pill pill-danger">执行异常</span>
             )}

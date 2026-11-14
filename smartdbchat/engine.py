@@ -43,6 +43,7 @@ from smartdbchat.workflow import (
     HealingTracker,
     PreflightChecker,
     PreflightStatus,
+    _default_suggestions,
     build_recovery_summary,
     classify_error,
     generate_follow_up_suggestions,
@@ -238,6 +239,16 @@ class SmartDBEngine:
 
         if agent_res.success and is_valid_query_result(agent_res.rows):
             return agent_res.sql, agent_res.rows, attempts, step_dicts, None, QueryStatus.SUCCESS
+
+        if not agent_res.sql and agent_res.error is None and agent_res.final_message:
+            return (
+                "",
+                [],
+                attempts,
+                step_dicts,
+                agent_res.final_message,
+                QueryStatus.OFF_TOPIC,
+            )
 
         if agent_res.error and "安全" in agent_res.error:
             status = QueryStatus.INVALID_SQL
@@ -462,6 +473,20 @@ class SmartDBEngine:
                 workflow_trace.append(
                     {"stage": "agent", "steps": len(agent_steps), "status": last_status.value}
                 )
+                if last_status == QueryStatus.OFF_TOPIC and last_error:
+                    return QueryResult(
+                        status=QueryStatus.OFF_TOPIC,
+                        sql="",
+                        rows=[],
+                        markdown_answer=last_error,
+                        error="该问题属于日常闲聊或非数据库查询需求。",
+                        agent_steps=agent_steps,
+                        linked_tables=linked_tables,
+                        mode=effective_mode,
+                        preflight_status=PreflightStatus.OFF_TOPIC.value,
+                        follow_up_suggestions=_default_suggestions(linked_tables or allowed_tables),
+                        workflow_trace=workflow_trace,
+                    )
             elif high_accuracy_mode:
                 self._emit(
                     on_status,

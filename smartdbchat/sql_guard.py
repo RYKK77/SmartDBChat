@@ -212,7 +212,8 @@ def validate_sql_ast(
             if _FORBIDDEN_KEYWORDS_RE.search(without_strings):
                 return SQLGuardResult(is_valid=False, reason="检测到潜在写操作或高危关键字")
             return SQLGuardResult(is_valid=True, sql=raw_stripped)
-        return SQLGuardResult(is_valid=False, reason=f"SQL 语法解析失败: {exc}")
+        clean_err = re.sub(r"\x1b\[[0-9;]*m", "", str(exc))
+        return SQLGuardResult(is_valid=False, reason=f"SQL 语法解析失败: {clean_err}")
 
     expressions = [e for e in expressions if e is not None]
     if len(expressions) == 0:

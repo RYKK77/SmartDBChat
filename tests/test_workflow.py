@@ -24,6 +24,12 @@ def test_preflight_checker_rules():
     assert res_chat.status == PreflightStatus.OFF_TOPIC
     assert not res_chat.allow_execution
 
+    res_greet = checker.check("你好啊", available_tables=["students", "departments"])
+    assert res_greet.status == PreflightStatus.OFF_TOPIC
+    assert not res_greet.allow_execution
+    assert "SmartDBChat" in res_greet.clarification_question
+    assert "students" in res_greet.clarification_question
+
     res_short = checker.check("?")
     assert res_short.status == PreflightStatus.NEEDS_CLARIFICATION
     assert not res_short.allow_execution

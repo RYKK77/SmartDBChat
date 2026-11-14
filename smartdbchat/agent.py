@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple, runtime_checkable
@@ -8,6 +9,32 @@ from smartdbchat.db import UnsafeSQLError, validate_read_only_sql
 from smartdbchat.llm import clean_sql_response
 
 logger = logging.getLogger(__name__)
+
+_SQL_FALLBACK_START_RE = re.compile(
+    r"^\s*(?:--|/\*.*?\*/\s*)*(?:SELECT|WITH|SHOW|DESCRIBE|DESC|EXPLAIN|INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE|REPLACE|GRANT|REVOKE|SET|USE|CALL)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _extract_fallback_sql(text: str) -> str:
+    """从模型未调用工具的纯文本回复中提取 SQL；若回复是自然语言闲聊/解释则返回空字符串。"""
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    sql_fence = re.findall(r"```sql\s*(.*?)\s*```", raw, re.DOTALL | re.IGNORECASE)
+    if sql_fence:
+        candidate = sql_fence[0].strip()
+        if candidate:
+            return candidate
+    generic_fence = re.findall(r"```\s*(.*?)\s*```", raw, re.DOTALL)
+    if generic_fence:
+        candidate = generic_fence[0].strip()
+        if _SQL_FALLBACK_START_RE.match(candidate):
+            return candidate
+    cleaned = clean_sql_response(raw)
+    if _SQL_FALLBACK_START_RE.match(cleaned):
+        return cleaned
+    return ""
 
 SUPPORTED_CHART_TYPES = frozenset(
     {
@@ -561,11 +588,14 @@ class NL2SQLAgent:
                         messages=messages,
                     )
 
-                # 回退处理：模型直接返回了 SQL 文本而未调用工具
-                cleaned_sql = clean_sql_response(thought)
+                # 回退处理：仅当模型直接返回了 SQL 语句而未调用工具时才执行回退查询；
+                # 若模型返回的是自然语言闲聊/澄清说明，则直接作为对话回复返回，避免把自然语言当成 SQL 校验报错。
+                cleaned_sql = _extract_fallback_sql(thought)
                 messages.append({"role": "assistant", "content": thought})
                 if not cleaned_sql:
-                    err_msg = last_error or "Agent 未生成有效 SQL 查询"
+                    err_msg = last_error if (last_error or not thought) else None
+                    if not thought and not err_msg:
+                        err_msg = "Agent 未生成有效 SQL 查询"
                     steps.append(
                         AgentStep(
                             step=step_idx,

@@ -44,7 +44,14 @@ _DESTRUCTIVE_INTENT_PATTERNS = [
 ]
 
 _OFF_TOPIC_PATTERNS = [
-    re.compile(r"^(你好|hi|hello|谢谢|thank\s*you|再见|bye)[!！。.\s]*$", re.I),
+    re.compile(
+        r"^(你好|您好|嗨|哈喽|hi|hello|hey|早上好|下午好|晚上好|早安|晚安|在吗|在不在|有人吗|谢谢|感谢|thank\s*you|thanks|再见|拜拜|bye)[呀啊哇呢吗嘛哈喽~～！!。.,，？?\s]*$",
+        re.I,
+    ),
+    re.compile(
+        r"^(你是谁|你叫什么|你能做什么|你会干什么|你有什么功能|介绍一下你自己|能帮我做什么|怎么用)[呀啊呢吗？?!！。.\s]*$",
+        re.I,
+    ),
     re.compile(r"(写一首诗|讲个笑话|今天天气|翻译成英文|帮我写周报)", re.I),
 ]
 
@@ -60,6 +67,30 @@ def _default_suggestions(tables: Optional[List[str]] = None) -> List[str]:
         "统计各分类的数量分布",
         "查询排名前 10 的记录",
     ]
+
+
+def _build_off_topic_reply(
+    available_tables: Optional[List[str]] = None,
+    database_description: str = "",
+) -> str:
+    """为日常问候或闲聊生成友好的引导式回复。"""
+    desc = f"（{database_description}）" if database_description else ""
+    if available_tables:
+        table_preview = "、".join(f"`{t}`" for t in available_tables[:6])
+        more = f" 等 {len(available_tables)} 张表" if len(available_tables) > 6 else ""
+        return (
+            f"你好！我是 **SmartDBChat** 智能数据分析助手{desc}。\n\n"
+            f"当前数据库包含 {table_preview}{more}，您可以直接用自然语言向我提问，例如：\n"
+            f"- 统计某张表的记录总数或各分类占比分布\n"
+            f"- 查询核心指标排名前 10 的明细数据\n"
+            f"- 分析不同维度之间的关联或趋势变化\n\n"
+            f"您可以点击下方建议问题快速开始，或直接输入您想查询的数据需求！"
+        )
+    return (
+        f"你好！我是 **SmartDBChat** 智能数据分析助手{desc}。\n\n"
+        f"我可以将您的自然语言问题转化为安全的只读 SQL 查询，并自动生成数据表格与可视化图表。"
+        f"请直接告诉我您想查询或分析的数据指标！"
+    )
 
 
 class PreflightChecker:
@@ -108,6 +139,10 @@ class PreflightChecker:
                 return PreflightResult(
                     status=PreflightStatus.OFF_TOPIC,
                     reason="该问题属于日常闲聊或非数据库查询需求。",
+                    clarification_question=_build_off_topic_reply(
+                        available_tables=available_tables,
+                        database_description=database_description,
+                    ),
                     suggestions=_default_suggestions(available_tables),
                 )
 
@@ -173,16 +208,16 @@ def classify_error(error_msg: Optional[str], is_empty: bool = False) -> ErrorCat
     msg = (error_msg or "").lower()
     if any(
         kw in msg
-        for kw in ("unsafe", "仅允许只读", "禁止", "写操作", "多条 sql", "outfile", "高危")
-    ):
-        return ErrorCategory.UNSAFE_SQL
-    if any(
-        kw in msg
         for kw in ("unknown column", "no such column", "doesn't exist", "no such table", "不存在", "未授权的表")
     ):
         return ErrorCategory.SCHEMA_MISMATCH
     if any(kw in msg for kw in ("syntax", "parse", "解析失败", "near ")):
         return ErrorCategory.SYNTAX_ERROR
+    if any(
+        kw in msg
+        for kw in ("unsafe", "仅允许只读", "禁止", "写操作", "多条 sql", "outfile", "高危")
+    ):
+        return ErrorCategory.UNSAFE_SQL
     if is_empty:
         return ErrorCategory.EMPTY_RESULT
     return ErrorCategory.EXECUTION_ERROR
