@@ -32,7 +32,7 @@ class LLMClient:
     def __init__(self, config: LLMConfig, client: Optional[OpenAI] = None):
         self.config = config
         self.client = client or OpenAI(
-            api_key=config.api_key,
+            api_key=config.api_key or "ollama",
             base_url=config.base_url,
         )
 

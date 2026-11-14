@@ -73,17 +73,36 @@ class SemanticQueryCache:
 
     def _get_embedding(self, text: str) -> Optional[List[float]]:
         try:
-            response = requests.post(
-                f"{self.embedding_config.base_url.rstrip('/')}/api/embeddings",
-                json={
-                    "model": self.embedding_config.model,
-                    "prompt": text,
-                },
-                timeout=self.embedding_config.timeout_seconds,
-            )
-            if response.status_code == 200:
-                data = response.json()
-                return data.get("embedding")
+            base = self.embedding_config.base_url.rstrip("/")
+            if self.embedding_config.mode == "ollama_legacy":
+                response = requests.post(
+                    f"{base}/api/embeddings",
+                    json={
+                        "model": self.embedding_config.model,
+                        "prompt": text,
+                    },
+                    timeout=self.embedding_config.timeout_seconds,
+                )
+                if response.status_code == 200:
+                    return response.json().get("embedding")
+            else:
+                headers = {"Content-Type": "application/json"}
+                if self.embedding_config.api_key:
+                    headers["Authorization"] = f"Bearer {self.embedding_config.api_key}"
+                response = requests.post(
+                    f"{base}/embeddings",
+                    headers=headers,
+                    json={
+                        "model": self.embedding_config.model,
+                        "input": text,
+                    },
+                    timeout=self.embedding_config.timeout_seconds,
+                )
+                if response.status_code == 200:
+                    items = response.json().get("data", [])
+                    if items:
+                        return items[0].get("embedding")
+
             logger.warning("嵌入向量 API 请求失败，状态码: %s", response.status_code)
             return None
         except Exception as exc:

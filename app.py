@@ -3,7 +3,13 @@ import streamlit as st
 
 from smartdbchat.cache import SemanticQueryCache
 from smartdbchat.charts import build_figures
-from smartdbchat.config import CacheConfig, DatabaseConfig, EmbeddingConfig, LLMConfig
+from smartdbchat.config import (
+    LLM_PROVIDERS,
+    CacheConfig,
+    DatabaseConfig,
+    EmbeddingConfig,
+    LLMConfig,
+)
 from smartdbchat.db import DatabaseManager, get_all_modules
 from smartdbchat.engine import SmartDBEngine
 from smartdbchat.llm import LLMClient
@@ -58,19 +64,58 @@ def render_sidebar() -> None:
         password = st.text_input("密码", type="password", value="")
         database = st.text_input("数据库名", value="")
 
-        st.subheader("LLM 设置")
-        api_key = st.text_input("API 密钥", type="password", value="")
+        st.subheader("LLM 模型设置")
+        provider_names = list(LLM_PROVIDERS.keys())
+        selected_provider = st.selectbox(
+            "模型服务商预设",
+            provider_names,
+            index=0,
+            help="选择主流服务商将自动填充最新 API 端点与推荐模型，也可选择自定义",
+        )
+        preset = LLM_PROVIDERS[selected_provider]
+
+        api_key = st.text_input(
+            "API 密钥",
+            type="password",
+            value="",
+            help="本地 Ollama 可留空" if not preset.requires_api_key else "",
+        )
         base_url = st.text_input(
             "基础 URL",
-            value="https://open.bigmodel.cn/api/paas/v4/",
-            help="兼容 OpenAI 接口标准的服务地址",
+            value=preset.base_url,
+            help="OpenAI 兼容接口地址",
         )
-        model_name = st.text_input("模型名称", value="glm-4-plus")
+        if preset.models:
+            model_choice = st.selectbox(
+                "推荐模型",
+                preset.models + ["自定义模型名称..."],
+                index=0,
+            )
+            if model_choice == "自定义模型名称...":
+                model_name = st.text_input("自定义模型名称", value=preset.default_model)
+            else:
+                model_name = model_choice
+        else:
+            model_name = st.text_input("模型名称", value=preset.default_model)
 
         st.subheader("缓存与向量设置")
-        embedding_url = st.text_input(
-            "Ollama 嵌入服务地址", value="http://localhost:11434"
+        embedding_mode_label = st.selectbox(
+            "嵌入向量接口协议",
+            ["OpenAI 兼容 (/embeddings)", "Ollama 旧版 (/api/embeddings)"],
+            index=0,
         )
+        embedding_mode = (
+            "openai_compatible"
+            if embedding_mode_label.startswith("OpenAI")
+            else "ollama_legacy"
+        )
+        default_emb_url = (
+            "http://localhost:11434/v1"
+            if embedding_mode == "openai_compatible"
+            else "http://localhost:11434"
+        )
+        embedding_url = st.text_input("嵌入服务地址", value=default_emb_url)
+        embedding_model = st.text_input("嵌入模型名称", value="nomic-embed-text")
         similarity_threshold = st.slider(
             "相似度阈值",
             min_value=0.5,
@@ -82,7 +127,7 @@ def render_sidebar() -> None:
         st.session_state.similarity_threshold = similarity_threshold
 
         if st.button("连接数据库"):
-            if not api_key:
+            if preset.requires_api_key and not api_key:
                 st.error("请输入 API 密钥")
             elif not database:
                 st.error("请输入数据库名")
@@ -99,7 +144,12 @@ def render_sidebar() -> None:
                     base_url=base_url,
                     model=model_name,
                 )
-                emb_cfg = EmbeddingConfig(base_url=embedding_url)
+                emb_cfg = EmbeddingConfig(
+                    base_url=embedding_url,
+                    model=embedding_model,
+                    api_key=api_key,
+                    mode=embedding_mode,
+                )
                 with st.spinner("正在连接数据库..."):
                     if create_engine(db_cfg, llm_cfg, emb_cfg):
                         st.success("数据库连接成功！")

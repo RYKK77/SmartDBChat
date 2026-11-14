@@ -44,3 +44,43 @@ def test_cache_keyword_fallback(tmp_path):
     assert hit is not None
     assert hit.sql == "SELECT AVG(score) FROM students"
     assert hit.match_type in ("tfidf", "keyword")
+
+
+def test_embedding_supports_openai_compatible_and_ollama_legacy(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+    from smartdbchat.config import LLM_PROVIDERS
+
+    assert "DeepSeek" in LLM_PROVIDERS
+    assert LLM_PROVIDERS["DeepSeek"].base_url == "https://api.deepseek.com/v1"
+
+    mock_post = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"data": [{"embedding": [0.1, 0.2, 0.3]}]}
+    mock_post.return_value = mock_resp
+    monkeypatch.setattr("smartdbchat.cache.requests.post", mock_post)
+
+    cache = SemanticQueryCache(
+        config=CacheConfig(db_path=str(tmp_path / "emb1.db")),
+        embedding_config=EmbeddingConfig(
+            base_url="https://api.openai.com/v1",
+            model="text-embedding-3-small",
+            api_key="sk-test",
+            mode="openai_compatible",
+        ),
+    )
+    vec = cache._get_embedding("hello")
+    assert vec == [0.1, 0.2, 0.3]
+    called_url = mock_post.call_args[0][0]
+    assert called_url == "https://api.openai.com/v1/embeddings"
+
+    mock_resp.json.return_value = {"embedding": [0.4, 0.5]}
+    cache.embedding_config = EmbeddingConfig(
+        base_url="http://localhost:11434",
+        model="nomic-embed-text",
+        mode="ollama_legacy",
+    )
+    vec2 = cache._get_embedding("hello")
+    assert vec2 == [0.4, 0.5]
+    assert mock_post.call_args[0][0] == "http://localhost:11434/api/embeddings"
+
