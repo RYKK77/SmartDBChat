@@ -1,183 +1,85 @@
-# SmartDBChat - 自然语言数据库查询系统
+# SmartDBChat - 自然语言数据库查询与可视化系统
 
-SmartDBChat 是一个基于大语言模型的自然语言数据库查询工具，它允许用户使用自然语言而非 SQL 来查询数据库，大大降低了数据分析的门槛。系统会自动将自然语言转换为 SQL 查询，执行查询并以易于理解的方式展示结果。
+SmartDBChat 是一个基于大语言模型（LLM）的自然语言数据库查询与分析工具（NL2SQL）。用户无需编写 SQL，只需用自然语言提问，系统即可自动生成安全的只读 SQL、执行查询、纠错重试、流式解读数据洞察，并自动生成交互式 Plotly 可视化图表。
 
 ## 🌟 核心功能
 
-- **自然语言转 SQL**：将用户的问题自动转换为准确的 SQL 查询语句
-- **智能结果解析**：将查询结果转换为易懂的自然语言描述和可视化图表
-- **语义查询缓存**：基于向量相似度匹配历史查询，提高响应速度
-- **自动错误处理**：智能检测并修复失败的查询，支持多次重试
-- **流式响应输出**：使用流式 API 逐步显示查询结果
-- **数据可视化**：自动生成适合的图表（饼图、柱状图等）展示查询结果
+- **自然语言转 SQL（NL2SQL）**：结合数据库 `SHOW CREATE TABLE` Schema 信息生成准确的 MySQL 查询语句，支持按业务模块过滤表范围。
+- **只读 SQL 安全校验**：内置语句校验，仅允许 `SELECT` / `WITH` / `SHOW` / `DESCRIBE` / `EXPLAIN` 等只读查询，拦截写操作及多语句注入。
+- **自动错误处理与重试**：当 SQL 执行报错或返回空结果时，自动携带失败 SQL 与错误详情重新生成并重试。
+- **流式结果解读**：通过流式接口逐步输出专业数据分析、趋势与异常洞察。
+- **智能多图表可视化**：支持饼图、柱状图、折线图（含多系列）、散点图、面积图、热力图、雷达图、箱线图、漏斗图、瀑布图、树状图等 Plotly 交互式图表。
+- **多级语义查询缓存**：基于 SQLite 存储历史查询，支持精确哈希匹配、嵌入向量余弦相似度、TF-IDF 与关键词匹配兜底，并自动执行缓存容量上限管理。
 
-## ✨ 技术特点
+## ✨ 支持的模型与接口
 
-- **统一 LLM 接口**：基于 OpenAI 接口标准，支持多种大语言模型
-- **模型灵活配置**：通过简单配置 `base_url` 和 `model` 参数即可切换不同 AI 服务提供商
-- **多级语义匹配算法**：支持嵌入向量相似度、TF-IDF 和关键词匹配等多种相似度算法
-- **缓存优化**：自动管理缓存大小，优先保留常用查询
-- **完善的错误处理**：详细的错误反馈和智能重试机制
-- **友好的用户界面**：基于 Streamlit 的简洁直观界面
+系统基于 OpenAI 兼容协议，侧边栏内置主流服务商预设（也支持任意自定义端点）：
 
-## 📋 前提条件
+| 服务商 | Base URL | 推荐模型示例 |
+| :--- | :--- | :--- |
+| **DeepSeek** | `https://api.deepseek.com/v1` | `deepseek-flash`、`deepseek-v4-pro` |
+| **智谱 AI (BigModel)** | `https://open.bigmodel.cn/api/paas/v4/` | `glm-5.3`、`glm-5.3-flash`、`glm-4.5-flash`、`glm-4-plus` |
+| **OpenAI** | `https://api.openai.com/v1` | `gpt-6.1-sol`、`gpt-6-astra`、`gpt-5-mini`、`gpt-4o` |
+| **阿里云百炼 (Qwen)** | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus`、`qwen3.7-plus`、`qwen3.8-flash` |
+| **Google Gemini** | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-3-flash`、`gemini-3.5-flash` |
+| **OpenRouter** | `https://openrouter.ai/api/v1` | `anthropic/claude-sonnet-5`、`openai/gpt-6.1-sol` |
+| **Ollama (本地)** | `http://localhost:11434/v1` | `qwen3:8b`、`deepseek-r1:8b`（支持免 API Key） |
 
-- Python 3.8+
+语义缓存的嵌入向量服务同时支持 **OpenAI 兼容 `/embeddings`** 与 **Ollama 旧版 `/api/embeddings`** 两种协议；当向量服务不可用时会自动降级到文本/关键词匹配。
+
+## 🧱 项目架构
+
+```text
+SmartDBChat/
+├── app.py                   # Streamlit 前端入口与交互界面
+├── smartdbchat/
+│   ├── config.py            # 数据库、LLM 预设、Embedding 与缓存配置
+│   ├── models.py            # 结构化查询结果与缓存命中数据模型
+│   ├── prompts.py           # SQL 生成、纠错重试与结果分析提示词
+│   ├── db.py                # MySQL 连接、只读 SQL 安全校验与 Schema 提取
+│   ├── llm.py               # OpenAI 兼容客户端封装与流式响应处理
+│   ├── cache.py             # SQLite 多级语义查询缓存（无 UI 耦合）
+│   ├── charts.py            # 图表 JSON 解析与 Plotly Figure 构建器
+│   └── engine.py            # SmartDBEngine 核心查询编排引擎
+├── tests/                   # 单元测试套件
+└── requirements.txt
+```
+
+## 📋 环境要求
+
+- Python 3.10+
 - MySQL 数据库
-- 支持 OpenAI 接口的 API 密钥
+- 任意 OpenAI 兼容大模型 API 密钥（或本地 Ollama 服务）
 
-## 🔧 安装步骤
+## 🔧 安装与运行
 
-1. 克隆仓库或下载源代码
+1. 克隆仓库并安装依赖：
 
-2. 安装依赖
 ```bash
 pip install -r requirements.txt
 ```
 
-3. 运行应用
+2. 启动 Streamlit 应用：
+
 ```bash
 streamlit run app.py
 ```
 
+3. 运行单元测试（可选）：
+
+```bash
+pytest -v
+```
+
 ## 🚀 使用指南
 
-### 1. 配置连接
-
-在侧边栏中填写以下信息：
-- 数据库设置（主机、端口、用户名、密码、数据库名）
-- LLM 设置：
-  - API 密钥
-  - 基础 URL（默认为 OpenAI，可更改为其他兼容服务）
-  - 模型名称（如 gpt-4-turbo, glm-4-plus 等）
-- 缓存相似度阈值（可选）
-
-点击"连接数据库"按钮建立连接。
-
-### 2. 提问查询
-
-在主界面的文本框中输入自然语言问题，例如：
-- "查询所有学生的姓名和平均成绩"
-- "哪个专业的学生人数最多？"
-- "统计各个年级的学生性别比例"
-
-设置最大重试次数（如果需要），然后点击"查询"按钮。
-
-### 3. 查看结果
-
-系统会显示：
-- 生成的 SQL 查询语句
-- 自然语言回答
-- 相关的图表（如果适用）
-- 可展开的原始数据视图
-
-### 4. 缓存管理
-
-在侧边栏可以：
-- 查看缓存统计信息
-- 调整相似度阈值
-- 清空缓存
-
-## 📝 示例查询
-
-```
-查询计算机科学专业平均分最高的前 5 名学生
-```
-
-```
-统计各个学院的课程数量并按照数量降序排列
-```
-
-```
-分析不同年级学生的选课情况
-```
-
-## 🔍 主要特性详解
-
-### 模型配置灵活性
-
-系统使用统一的 OpenAI 接口标准，支持多种模型：
-
-- **OpenAI**：设置 base_url 和 gpt-4 系列模型
-- **智谱 AI**：使用**默认** base_url 为智谱 AI 接口地址，model 为 glm-4-plus
-- **Azure OpenAI**：设置 base_url 为 Azure 部署端点
-- **其他兼容服务**：任何兼容 OpenAI 接口的服务均可通过配置接入
-
-### 语义查询缓存
-
-系统会存储之前执行过的查询及其 SQL，当用户提出语义相似的问题时，可直接使用缓存的 SQL 而无需重新生成，显著提升响应速度。缓存系统支持：
-
-- 嵌入向量相似度匹配（首选）
-- TF-IDF 文本相似度计算（备用）
-- 关键词匹配（最后备选）
-
-### 自动错误处理与重试
-
-当生成的 SQL 执行失败或返回空结果时，系统会：
-
-1. 分析错误原因
-2. 重新生成更准确的 SQL
-3. 最多重试用户设定的次数
-4. 提供详细的错误和重试信息
-
-### 智能可视化
-
-系统会根据查询结果的数据特点，自动决定适合的图表类型：
-
-- 饼图：适合展示占比关系
-- 柱状图：适合数据对比关系
-- 表格：适合详细数据展示
-
-## 📊 技术架构
-
-- **前端**：Streamlit
-- **后端处理**：Python
-- **数据库连接**：MySQL Connector
-- **LLM 接口**：OpenAI 兼容接口
-- **数据可视化**：Plotly
-- **缓存系统**：SQLite + 向量相似度
-
-## 🔧 模型配置示例
-
-```python
-# OpenAI 配置
-llm_config = {
-    "api_key": "your-openai-api-key",
-    "base_url": "https://api.openai.com/v1",
-    "model": "gpt-4-turbo"
-}
-
-# 智谱 AI 配置
-llm_config = {
-    "api_key": "your-zhipu-api-key",
-    "base_url": "https://open.bigmodel.cn/api/paas/v4",
-    "model": "glm-4-plus"
-}
-
-# Azure OpenAI 配置
-llm_config = {
-    "api_key": "your-azure-api-key",
-    "base_url": "https://your-resource-name.openai.azure.com/openai/deployments/your-deployment-name",
-    "model": "gpt-4"
-}
-```
-
-## ⚠️ 注意事项
-
-- 首次查询可能需要较长时间，因为系统需要生成 SQL
-- 查询结果的质量取决于数据库结构和模型对结构的理解
-- 确保 API 密钥有足够的额度用于自然语言处理
-- 缓存系统默认存储最多 1000 条查询记录
-- 不同模型的能力和特点可能导致 SQL 生成质量有所差异
+1. **配置连接**：在左侧边栏填写 MySQL 连接信息，选择模型服务商预设（或自定义 Base URL 与模型名称）并填入 API Key，点击 **连接数据库**。
+2. **输入问题**：在主界面输入自然语言问题，例如：
+   - `"查询计算机科学专业平均分最高的前 5 名学生"`
+   - `"统计各个学院的课程数量并按照数量降序排列"`
+   - `"分析不同年级学生的选课情况"`
+3. **查看结果**：系统会展示生成的 SQL、原始数据表、流式 AI 分析结论以及自动匹配的交互式图表。
 
 ## 📜 许可证
 
 [MIT](LICENSE)
-
-## 🤝 贡献
-
-欢迎提交 issues 和 pull requests，帮助改进这个项目！
-
----
-
-希望 SmartDBChat 能够帮助您更便捷地探索和分析数据！
