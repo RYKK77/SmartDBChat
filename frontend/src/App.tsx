@@ -3,16 +3,19 @@ import {
   BookOpen,
   Database,
   GitFork,
+  LogOut,
   MessageSquare,
   Moon,
   PanelLeft,
   PanelRight,
   PlugZap,
   Send,
+  Shield,
   Sparkles,
   Sun,
   Trash2,
 } from 'lucide-react'
+import { AuthModal } from './components/AuthModal'
 import { ConnectionModal } from './components/ConnectionModal'
 import { MessageCard } from './components/MessageCard'
 import { SchemaGraphCanvas } from './components/SchemaGraphCanvas'
@@ -23,6 +26,7 @@ import type {
   CacheStats,
   ChatMessage,
   ConnectionMeta,
+  ConnectPayload,
   EngineConfig,
   ProviderPreset,
   SchemaGraphResponse,
@@ -50,15 +54,13 @@ const STARTER_PROMPTS = [
 ]
 
 import {
+  consumeLegacyBrowserData,
   deriveSessionTitle,
-  isAutoConnectDisabled,
-  loadActiveSessionId,
-  loadChatSessions,
-  loadLastConnection,
-  saveActiveSessionId,
-  saveChatSessions,
-  setAutoConnectDisabled,
+  getAuthToken,
+  setAuthToken,
+  type AuthUser,
   type ChatSession,
+  type SavedConnectionProfile,
 } from './utils/storage'
 
 export function App() {
@@ -82,19 +84,13 @@ export function App() {
   const [highlightedTables, setHighlightedTables] = useState<string[]>([])
   const [selectedTable, setSelectedTable] = useState<string | null>(null)
 
-  const [sessions, setSessions] = useState<ChatSession[]>(() => loadChatSessions())
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
-    const savedId = loadActiveSessionId()
-    const all = loadChatSessions()
-    if (savedId && all.some((s) => s.id === savedId)) return savedId
-    return all[0]?.id || null
-  })
-  const [messages, setMessages] = useState<ChatMessage[]>(() => {
-    const all = loadChatSessions()
-    const savedId = loadActiveSessionId()
-    const target = (savedId && all.find((s) => s.id === savedId)) || all[0]
-    return target ? target.messages : []
-  })
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null)
+  const [authChecking, setAuthChecking] = useState<boolean>(() => Boolean(getAuthToken()))
+  const [lastConnection, setLastConnection] = useState<ConnectPayload | null>(null)
+  const [savedProfiles, setSavedProfiles] = useState<SavedConnectionProfile[]>([])
+  const [sessions, setSessions] = useState<ChatSession[]>([])
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
+  const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [isSending, setIsSending] = useState(false)
 
@@ -177,93 +173,174 @@ export function App() {
     }
   }, [])
 
-  useEffect(() => {
-    Promise.all([
+  const syncUserRemoteState = useCallback(async () => {
+    // 若浏览器曾存有旧版连接或会话，首次登录后自动迁移至后端并彻底清除本地残留
+    const legacy = consumeLegacyBrowserData()
+    if (legacy.lastConnection) {
+      await api
+        .updateUserPreferences({
+          last_connection: legacy.lastConnection,
+          update_last_connection: true,
+        })
+        .catch(() => null)
+    }
+    for (const prof of legacy.profiles) {
+      await api
+        .saveConnectionProfile({ id: prof.id, name: prof.name, payload: prof.payload })
+        .catch(() => null)
+    }
+    for (const sess of legacy.sessions) {
+      await api
+        .saveChatSession(sess.id, { title: sess.title, messages: sess.messages })
+        .catch(() => null)
+    }
+
+    const userState = await api.getUserState()
+    setLastConnection(userState.last_connection)
+    setSavedProfiles(userState.profiles || [])
+    const remoteSessions = userState.sessions || []
+    setSessions(remoteSessions)
+
+    const targetSess =
+      (userState.active_session_id &&
+        remoteSessions.find((s) => s.id === userState.active_session_id)) ||
+      remoteSessions[0] ||
+      null
+    setActiveSessionId(targetSess ? targetSess.id : null)
+    setMessages(targetSess ? targetSess.messages : [])
+
+    const [health, stats] = await Promise.all([
       api.getHealth().catch(() => null),
-      api.getProviders().catch(() => ({ providers: [] })),
       api.getCacheStats().catch(() => null),
-    ]).then(async ([health, prov, stats]) => {
-      setProviders(prov.providers || [])
-      if (stats) setCacheStats(stats)
-      if (health?.connected) {
-        setConnected(true)
-        setConnectionMeta(health.connection_meta || {})
+    ])
+    if (stats) setCacheStats(stats)
+    if (health?.connected) {
+      setConnected(true)
+      setConnectionMeta(health.connection_meta || {})
+      loadWorkspaceData()
+    } else if (!userState.auto_connect_disabled && userState.last_connection) {
+      try {
+        const res = await api.connect(userState.last_connection)
+        setConnected(res.connected)
+        setConnectionMeta(res.connection_meta)
+        setConfig(res.config)
         loadWorkspaceData()
-      } else if (!isAutoConnectDisabled()) {
-        const lastConn = loadLastConnection()
-        if (lastConn) {
-          try {
-            const res = await api.connect(lastConn)
-            setConnected(res.connected)
-            setConnectionMeta(res.connection_meta)
-            setConfig(res.config)
-            loadWorkspaceData()
-          } catch {
-            // 自动重连失败时保留已填配置，用户可在弹窗内调整
-          }
-        }
+      } catch {
+        // 自动重连失败时保留已保存配置供弹窗使用
       }
-    })
+    }
   }, [loadWorkspaceData])
 
   useEffect(() => {
+    api
+      .getProviders()
+      .then((prov) => setProviders(prov.providers || []))
+      .catch(() => null)
+
+    const token = getAuthToken()
+    if (!token) {
+      setAuthChecking(false)
+      return
+    }
+    api
+      .getMe()
+      .then(async (res) => {
+        setAuthUser(res.user)
+        await syncUserRemoteState()
+      })
+      .catch(() => {
+        setAuthToken(null)
+        setAuthUser(null)
+      })
+      .finally(() => {
+        setAuthChecking(false)
+      })
+  }, [syncUserRemoteState])
+
+  useEffect(() => {
+    if (!authUser) return
     const completed = messages.filter((m) => !m.isStreaming)
-    if (completed.length > 0) {
+    if (completed.length > 0 && !messages.some((m) => m.isStreaming)) {
       const targetId = activeSessionId || `sess-${Date.now()}`
+      const title = deriveSessionTitle(completed)
       if (!activeSessionId) {
         setActiveSessionId(targetId)
-        saveActiveSessionId(targetId)
       }
       setSessions((prev) => {
         const existingIdx = prev.findIndex((s) => s.id === targetId)
         const updatedSession: ChatSession = {
           id: targetId,
-          title: deriveSessionTitle(completed),
+          title,
           updatedAt: Date.now(),
           messages: completed,
         }
-        const next =
-          existingIdx >= 0
-            ? prev.map((s) => (s.id === targetId ? updatedSession : s))
-            : [updatedSession, ...prev]
-        saveChatSessions(next)
-        return next
+        return existingIdx >= 0
+          ? prev.map((s) => (s.id === targetId ? updatedSession : s))
+          : [updatedSession, ...prev]
       })
+      api.saveChatSession(targetId, { title, messages: completed }).catch(() => null)
     }
     if (chatScrollRef.current) {
       chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight
     }
-  }, [messages, activeSessionId])
+  }, [messages, activeSessionId, authUser])
 
   const handleNewSession = () => {
     setActiveSessionId(null)
-    saveActiveSessionId(null)
     setMessages([])
     setHighlightedTables([])
     setActiveView('chat')
+    api
+      .updateUserPreferences({ active_session_id: null, update_active_session: true })
+      .catch(() => null)
   }
 
   const handleSelectSession = (id: string) => {
     const target = sessions.find((s) => s.id === id)
     if (!target) return
     setActiveSessionId(id)
-    saveActiveSessionId(id)
     setMessages(target.messages)
     setHighlightedTables([])
     setActiveView('chat')
+    api
+      .updateUserPreferences({ active_session_id: id, update_active_session: true })
+      .catch(() => null)
   }
 
-  const handleDeleteSession = (id: string) => {
+  const handleDeleteSession = async (id: string) => {
     const next = sessions.filter((s) => s.id !== id)
     setSessions(next)
-    saveChatSessions(next)
     if (id === activeSessionId) {
       const fallback = next[0] || null
       setActiveSessionId(fallback?.id || null)
-      saveActiveSessionId(fallback?.id || null)
       setMessages(fallback ? fallback.messages : [])
       setHighlightedTables([])
+      api
+        .updateUserPreferences({
+          active_session_id: fallback?.id || null,
+          update_active_session: true,
+        })
+        .catch(() => null)
     }
+    await api.deleteChatSession(id).catch(() => null)
+  }
+
+  const handleAuthenticated = async (token: string, user: AuthUser) => {
+    setAuthToken(token)
+    setAuthUser(user)
+    await syncUserRemoteState().catch(() => null)
+  }
+
+  const handleLogout = async () => {
+    await api.logout().catch(() => null)
+    setAuthToken(null)
+    setAuthUser(null)
+    setSessions([])
+    setActiveSessionId(null)
+    setMessages([])
+    setSavedProfiles([])
+    setLastConnection(null)
+    notify('已退出登录')
   }
 
   const handleConnected = (res: {
@@ -271,7 +348,6 @@ export function App() {
     connection_meta: ConnectionMeta
     config: EngineConfig
   }) => {
-    setAutoConnectDisabled(false)
     setConnected(res.connected)
     setConnectionMeta(res.connection_meta)
     setConfig(res.config)
@@ -283,7 +359,6 @@ export function App() {
   const handleDisconnect = async () => {
     try {
       await api.disconnect()
-      setAutoConnectDisabled(true)
       setConnected(false)
       setConnectionMeta({})
       setConfig(null)
@@ -556,6 +631,23 @@ export function App() {
           >
             {theme === 'light' ? <Moon size={15} /> : <Sun size={15} />}
           </button>
+
+          {authUser && (
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <span className="pill pill-info" style={{ textTransform: 'none' }}>
+                <Shield size={11} />
+                {authUser.username} · {authUser.role.toUpperCase()}
+              </span>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={handleLogout}
+                title="退出登录"
+              >
+                <LogOut size={15} />
+              </button>
+            </div>
+          )}
         </div>
       </header>
 
@@ -758,9 +850,20 @@ export function App() {
         providers={providers}
         initialConfig={config}
         initialMeta={connectionMeta}
+        lastConnection={lastConnection}
+        savedProfiles={savedProfiles}
+        onProfilesChange={(profs, nextLast) => {
+          setSavedProfiles(profs)
+          if (nextLast) setLastConnection(nextLast)
+        }}
         onConnected={handleConnected}
         onNotify={notify}
       />
+
+      {/* 登录/注册模态框 */}
+      {!authChecking && !authUser && (
+        <AuthModal onAuthenticated={handleAuthenticated} onNotify={notify} />
+      )}
 
       {/* 全局 Toast 通知 */}
       {toast && (

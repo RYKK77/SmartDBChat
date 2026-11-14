@@ -7,15 +7,7 @@ import type {
   EngineConfig,
   ProviderPreset,
 } from '../types/api'
-import {
-  deleteConnectionProfile,
-  loadLastConnection,
-  loadSavedProfiles,
-  saveConnectionProfile,
-  saveLastConnection,
-  setAutoConnectDisabled,
-  type SavedConnectionProfile,
-} from '../utils/storage'
+import type { SavedConnectionProfile } from '../utils/storage'
 
 interface ConnectionModalProps {
   open: boolean
@@ -23,6 +15,9 @@ interface ConnectionModalProps {
   providers: ProviderPreset[]
   initialConfig?: EngineConfig | null
   initialMeta?: ConnectionMeta | null
+  lastConnection?: ConnectPayload | null
+  savedProfiles: SavedConnectionProfile[]
+  onProfilesChange: (profiles: SavedConnectionProfile[], lastConn?: ConnectPayload) => void
   onConnected: (res: {
     connected: boolean
     connection_meta: ConnectionMeta
@@ -64,11 +59,13 @@ export function ConnectionModal({
   providers,
   initialConfig,
   initialMeta,
+  lastConnection,
+  savedProfiles,
+  onProfilesChange,
   onConnected,
   onNotify,
 }: ConnectionModalProps) {
-  const [form, setForm] = useState<ConnectPayload>(() => loadLastConnection() || DEFAULT_PAYLOAD)
-  const [savedProfiles, setSavedProfiles] = useState<SavedConnectionProfile[]>(() => loadSavedProfiles())
+  const [form, setForm] = useState<ConnectPayload>(() => lastConnection || DEFAULT_PAYLOAD)
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null)
   const [profileName, setProfileName] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(false)
@@ -76,10 +73,8 @@ export function ConnectionModal({
 
   useEffect(() => {
     if (!open) return
-    setSavedProfiles(loadSavedProfiles())
-    const lastSaved = loadLastConnection()
     setForm((prev) => {
-      const next = { ...DEFAULT_PAYLOAD, ...(lastSaved || prev) }
+      const next = { ...DEFAULT_PAYLOAD, ...(lastConnection || prev) }
       if (providers.length > 0 && !providers.some((p) => p.name === next.provider)) {
         const first = providers[0]
         next.provider = first.name
@@ -110,7 +105,7 @@ export function ConnectionModal({
       }
       return next
     })
-  }, [open, providers, initialConfig, initialMeta])
+  }, [open, providers, initialConfig, initialMeta, lastConnection])
 
   const activeProvider = useMemo(
     () => providers.find((p) => p.name === form.provider) || null,
@@ -146,15 +141,19 @@ export function ConnectionModal({
     setSubmitting(true)
     try {
       const res = await api.connect(form)
-      saveLastConnection(form)
-      setAutoConnectDisabled(false)
       if (activeProfileId) {
         const existing = savedProfiles.find((p) => p.id === activeProfileId)
-        setSavedProfiles(saveConnectionProfile(existing?.name || '', form, activeProfileId))
-      } else if (savedProfiles.length === 0) {
-        const updated = saveConnectionProfile('', form)
-        setSavedProfiles(updated)
-        if (updated[0]) setActiveProfileId(updated[0].id)
+        const profRes = await api.saveConnectionProfile({
+          id: activeProfileId,
+          name: existing?.name || '',
+          payload: form,
+        })
+        onProfilesChange(profRes.profiles, form)
+      } else {
+        const stateRes = await api.getUserState().catch(() => null)
+        if (stateRes) {
+          onProfilesChange(stateRes.profiles, form)
+        }
       }
       onConnected(res)
       onNotify(
@@ -207,7 +206,7 @@ export function ConnectionModal({
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                 <span className="field-label" style={{ margin: 0, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
                   <Bookmark size={12} color="var(--accent)" />
-                  已保存的连接配置（本地持久化）
+                  已保存的连接配置（服务端持久化）
                 </span>
                 <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                   {savedProfiles.length} 个配置
@@ -254,11 +253,16 @@ export function ConnectionModal({
                         <button
                           type="button"
                           title="删除该配置"
-                          onClick={() => {
-                            setSavedProfiles(deleteConnectionProfile(prof.id))
-                            if (activeProfileId === prof.id) {
-                              setActiveProfileId(null)
-                              setProfileName('')
+                          onClick={async () => {
+                            try {
+                              const res = await api.deleteConnectionProfile(prof.id)
+                              onProfilesChange(res.profiles)
+                              if (activeProfileId === prof.id) {
+                                setActiveProfileId(null)
+                                setProfileName('')
+                              }
+                            } catch (err: any) {
+                              onNotify(err.message || '删除配置失败', true)
                             }
                           }}
                           style={{
@@ -289,18 +293,21 @@ export function ConnectionModal({
                 <button
                   type="button"
                   className="btn btn-sm"
-                  onClick={() => {
-                    const updated = saveConnectionProfile(
-                      profileName,
-                      form,
-                      activeProfileId || undefined,
-                    )
-                    setSavedProfiles(updated)
-                    saveLastConnection(form)
-                    if (!activeProfileId && updated[0]) {
-                      setActiveProfileId(updated[0].id)
+                  onClick={async () => {
+                    try {
+                      const res = await api.saveConnectionProfile({
+                        id: activeProfileId || undefined,
+                        name: profileName,
+                        payload: form,
+                      })
+                      onProfilesChange(res.profiles, form)
+                      if (!activeProfileId && res.profiles[0]) {
+                        setActiveProfileId(res.profiles[0].id)
+                      }
+                      onNotify('连接配置已保存到服务端')
+                    } catch (err: any) {
+                      onNotify(err.message || '保存配置失败', true)
                     }
-                    onNotify('连接配置已保存到本地')
                   }}
                 >
                   {activeProfileId ? '更新配置' : '保存配置'}
@@ -309,11 +316,18 @@ export function ConnectionModal({
                   <button
                     type="button"
                     className="btn btn-sm"
-                    onClick={() => {
-                      const updated = saveConnectionProfile(profileName, form)
-                      setSavedProfiles(updated)
-                      if (updated[0]) setActiveProfileId(updated[0].id)
-                      onNotify('已另存为新配置')
+                    onClick={async () => {
+                      try {
+                        const res = await api.saveConnectionProfile({
+                          name: profileName,
+                          payload: form,
+                        })
+                        onProfilesChange(res.profiles, form)
+                        if (res.profiles[0]) setActiveProfileId(res.profiles[0].id)
+                        onNotify('已另存为新配置（服务端）')
+                      } catch (err: any) {
+                        onNotify(err.message || '另存失败', true)
+                      }
                     }}
                   >
                     另存为

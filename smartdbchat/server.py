@@ -8,9 +8,9 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -32,6 +32,7 @@ from smartdbchat.models import QueryResult, QueryStatus
 from smartdbchat.schema_linker import build_schema_graph
 from smartdbchat.semantic_layer import SemanticLayer
 from smartdbchat.sql_guard import validate_sql_ast
+from smartdbchat.store import AppStore
 
 
 def _default_sandbox_semantic_layer() -> SemanticLayer:
@@ -192,15 +193,49 @@ class GoldenExampleRequest(BaseModel):
     tags: List[str] = Field(default_factory=list)
 
 
+class AuthCredentialsRequest(BaseModel):
+    username: str
+    password: str
+
+
+class SaveConnectionProfileRequest(BaseModel):
+    id: Optional[str] = None
+    name: str = ""
+    payload: Dict[str, Any]
+
+
+class SaveChatSessionRequest(BaseModel):
+    title: str = "新对话"
+    messages: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class UpdatePreferencesRequest(BaseModel):
+    last_connection: Optional[Dict[str, Any]] = None
+    update_last_connection: bool = False
+    auto_connect_disabled: Optional[bool] = None
+    active_session_id: Optional[str] = None
+    update_active_session: bool = False
+
+
 class AppRuntimeState:
     """线程安全的服务端运行时状态管理。"""
 
-    def __init__(self, cache_db_path: str = "semantic_cache.db") -> None:
+    def __init__(
+        self,
+        cache_db_path: str = "semantic_cache.db",
+        app_db_path: Optional[str] = None,
+    ) -> None:
         self.lock = threading.Lock()
         self.engine: Optional[SmartDBEngine] = None
         self.db_type: str = "sandbox"
         self.connection_meta: Dict[str, Any] = {}
         self.cache = SemanticQueryCache(CacheConfig(db_path=cache_db_path), EmbeddingConfig())
+        resolved_app_db = app_db_path or (
+            "smartdb_app.db"
+            if cache_db_path == "semantic_cache.db"
+            else f"{os.path.splitext(cache_db_path)[0]}_app.db"
+        )
+        self.store = AppStore(db_path=resolved_app_db)
         self.semantic_layer: SemanticLayer = _default_sandbox_semantic_layer()
         self.semantic_yaml_path: str = ""
         self.selected_module: Optional[str] = None
@@ -239,6 +274,8 @@ def create_app(
     initial_engine: Optional[SmartDBEngine] = None,
     cache_db_path: str = "semantic_cache.db",
     frontend_dist_dir: Optional[str] = None,
+    app_db_path: Optional[str] = None,
+    require_auth: bool = False,
 ) -> FastAPI:
     app = FastAPI(title="SmartDBChat API", version="0.3.0")
     app.add_middleware(
@@ -249,7 +286,7 @@ def create_app(
         allow_headers=["*"],
     )
 
-    state = AppRuntimeState(cache_db_path=cache_db_path)
+    state = AppRuntimeState(cache_db_path=cache_db_path, app_db_path=app_db_path)
     if initial_engine is not None:
         state.engine = initial_engine
         if initial_engine.semantic_layer is not None:
@@ -262,6 +299,56 @@ def create_app(
             "provider": "Custom",
             "embedding_available": initial_engine.cache.embedding_available,
         }
+
+    def _extract_bearer_token(request: Request) -> str:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            return auth_header[7:].strip()
+        return ""
+
+    def _require_user(request: Request) -> Dict[str, Any]:
+        user = getattr(request.state, "user", None)
+        if user:
+            return user
+        token = _extract_bearer_token(request)
+        verified = state.store.verify_token(token)
+        if not verified:
+            raise HTTPException(status_code=401, detail="未登录或登录已过期，请先登录")
+        request.state.user = verified
+        return verified
+
+    _PUBLIC_API_PATHS = {
+        "/api/health",
+        "/api/providers",
+        "/api/auth/register",
+        "/api/auth/login",
+    }
+
+    @app.middleware("http")
+    async def auth_guard_middleware(request: Request, call_next: Any) -> Any:
+        path = request.url.path
+        if request.method == "OPTIONS" or not path.startswith("/api/"):
+            return await call_next(request)
+        if path in _PUBLIC_API_PATHS:
+            return await call_next(request)
+
+        token = _extract_bearer_token(request)
+        if token:
+            user = state.store.verify_token(token)
+            if not user:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "登录凭证无效或已过期，请重新登录"},
+                )
+            request.state.user = user
+            return await call_next(request)
+
+        if require_auth or path.startswith("/api/user/") or path.startswith("/api/auth/") or state.store.has_any_users():
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "未登录或缺少访问权限，请先登录"},
+            )
+        return await call_next(request)
 
     def _require_engine() -> SmartDBEngine:
         if state.engine is None:
@@ -291,8 +378,110 @@ def create_app(
             ]
         }
 
+    @app.post("/api/auth/register")
+    def register(req: AuthCredentialsRequest) -> Dict[str, Any]:
+        try:
+            return state.store.register_user(req.username, req.password)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/auth/login")
+    def login(req: AuthCredentialsRequest) -> Dict[str, Any]:
+        try:
+            return state.store.login_user(req.username, req.password)
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    @app.post("/api/auth/logout")
+    def logout(request: Request) -> Dict[str, Any]:
+        _require_user(request)
+        token = _extract_bearer_token(request)
+        if token:
+            state.store.revoke_token(token)
+        return {"ok": True}
+
+    @app.get("/api/auth/me")
+    def get_me(request: Request) -> Dict[str, Any]:
+        return {"user": _require_user(request)}
+
+    @app.get("/api/user/state")
+    def get_user_state(request: Request) -> Dict[str, Any]:
+        user = _require_user(request)
+        return state.store.get_user_state(user["id"])
+
+    @app.put("/api/user/preferences")
+    def update_user_preferences(req: UpdatePreferencesRequest, request: Request) -> Dict[str, Any]:
+        user = _require_user(request)
+        state.store.update_preferences(
+            user_id=user["id"],
+            last_connection=req.last_connection,
+            update_last_connection=req.update_last_connection,
+            auto_connect_disabled=req.auto_connect_disabled,
+            active_session_id=req.active_session_id,
+            update_active_session=req.update_active_session,
+        )
+        return {"ok": True}
+
+    @app.post("/api/user/connections")
+    def save_user_connection(req: SaveConnectionProfileRequest, request: Request) -> Dict[str, Any]:
+        user = _require_user(request)
+        try:
+            profiles = state.store.save_connection_profile(
+                user_id=user["id"],
+                name=req.name,
+                payload=req.payload,
+                profile_id=req.id,
+            )
+            state.store.update_preferences(
+                user_id=user["id"],
+                last_connection=req.payload,
+                update_last_connection=True,
+            )
+            return {"profiles": profiles}
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    @app.delete("/api/user/connections/{profile_id}")
+    def delete_user_connection(profile_id: str, request: Request) -> Dict[str, Any]:
+        user = _require_user(request)
+        try:
+            profiles = state.store.delete_connection_profile(user["id"], profile_id)
+            return {"profiles": profiles}
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    @app.put("/api/user/sessions/{session_id}")
+    def save_user_session(
+        session_id: str, req: SaveChatSessionRequest, request: Request
+    ) -> Dict[str, Any]:
+        user = _require_user(request)
+        try:
+            sessions = state.store.save_chat_session(
+                user_id=user["id"],
+                session_id=session_id,
+                title=req.title,
+                messages=req.messages,
+            )
+            state.store.update_preferences(
+                user_id=user["id"],
+                active_session_id=session_id,
+                update_active_session=True,
+            )
+            return {"sessions": sessions}
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    @app.delete("/api/user/sessions/{session_id}")
+    def delete_user_session(session_id: str, request: Request) -> Dict[str, Any]:
+        user = _require_user(request)
+        try:
+            sessions = state.store.delete_chat_session(user["id"], session_id)
+            return {"sessions": sessions}
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+
     @app.post("/api/connect")
-    def connect(req: ConnectRequest) -> Dict[str, Any]:
+    def connect(req: ConnectRequest, request: Request) -> Dict[str, Any]:
         with state.lock:
             if state.engine is not None and hasattr(state.engine.db, "close"):
                 try:
@@ -384,6 +573,20 @@ def create_app(
                 "embedding_available": emb_ok,
                 "has_api_key": bool(req.api_key.strip()),
             }
+            user = getattr(request.state, "user", None)
+            if user:
+                req_dict = req.model_dump()
+                state.store.update_preferences(
+                    user_id=user["id"],
+                    last_connection=req_dict,
+                    update_last_connection=True,
+                    auto_connect_disabled=False,
+                )
+                cur_state = state.store.get_user_state(user["id"])
+                if not cur_state["profiles"]:
+                    state.store.save_connection_profile(
+                        user_id=user["id"], name="", payload=req_dict
+                    )
             return {
                 "connected": True,
                 "connection_meta": state.connection_meta,
@@ -391,7 +594,7 @@ def create_app(
             }
 
     @app.post("/api/disconnect")
-    def disconnect() -> Dict[str, Any]:
+    def disconnect(request: Request) -> Dict[str, Any]:
         with state.lock:
             if state.engine is not None and hasattr(state.engine.db, "close"):
                 try:
@@ -400,6 +603,11 @@ def create_app(
                     pass
             state.engine = None
             state.connection_meta = {}
+            user = getattr(request.state, "user", None)
+            if user:
+                state.store.update_preferences(
+                    user_id=user["id"], auto_connect_disabled=True
+                )
             return {"connected": False}
 
     def _current_config_payload() -> Dict[str, Any]:

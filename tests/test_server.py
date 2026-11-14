@@ -185,3 +185,74 @@ def test_server_spa_static_serving(tmp_path):
     api_404 = client.get("/api/nonexistent")
     assert api_404.status_code == 404
 
+
+def test_server_auth_rbac_and_user_persistence(tmp_path):
+    app = create_app(
+        cache_db_path=str(tmp_path / "auth_cache.db"),
+        app_db_path=str(tmp_path / "auth_app.db"),
+    )
+    client = TestClient(app)
+
+    # 1. 注册首个用户 -> 自动成为 admin
+    reg1 = client.post("/api/auth/register", json={"username": "alice", "password": "password123"})
+    assert reg1.status_code == 200
+    token_alice = reg1.json()["token"]
+    assert reg1.json()["user"]["role"] == "admin"
+
+    # 2. 注册第二个用户 -> 普通 user
+    reg2 = client.post("/api/auth/register", json={"username": "bob", "password": "password456"})
+    assert reg2.status_code == 200
+    token_bob = reg2.json()["token"]
+    assert reg2.json()["user"]["role"] == "user"
+
+    # 3. 权限校验：已有注册用户后，未携带 Token 访问受保护接口返回 401
+    unauth = client.post("/api/connect", json={"db_type": "sandbox"})
+    assert unauth.status_code == 401
+    assert client.get("/api/user/state").status_code == 401
+
+    # 4. Alice 保存连接配置（含 sk）与对话记录到后端
+    headers_alice = {"Authorization": f"Bearer {token_alice}"}
+    headers_bob = {"Authorization": f"Bearer {token_bob}"}
+
+    prof_res = client.post(
+        "/api/user/connections",
+        headers=headers_alice,
+        json={
+            "id": "conn-alice-1",
+            "name": "Alice DeepSeek",
+            "payload": {"db_type": "sandbox", "provider": "DeepSeek", "api_key": "sk-secret-alice"},
+        },
+    )
+    assert prof_res.status_code == 200
+    assert len(prof_res.json()["profiles"]) == 1
+
+    sess_res = client.put(
+        "/api/user/sessions/sess-alice-1",
+        headers=headers_alice,
+        json={
+            "title": "各学院 GPA 分析",
+            "messages": [{"id": "m1", "role": "user", "content": "各学院 GPA 分析"}],
+        },
+    )
+    assert sess_res.status_code == 200
+    assert len(sess_res.json()["sessions"]) == 1
+
+    # 5. 跨用户权限隔离：Bob 不能读取、修改或删除 Alice 的连接配置与对话记录
+    bob_state = client.get("/api/user/state", headers=headers_bob).json()
+    assert bob_state["profiles"] == []
+    assert bob_state["sessions"] == []
+
+    forbidden_del_conn = client.delete("/api/user/connections/conn-alice-1", headers=headers_bob)
+    assert forbidden_del_conn.status_code == 403
+
+    forbidden_mod_sess = client.put(
+        "/api/user/sessions/sess-alice-1",
+        headers=headers_bob,
+        json={"title": "篡改", "messages": []},
+    )
+    assert forbidden_mod_sess.status_code == 403
+
+    # 6. 退出登录后 Token 立即失效
+    assert client.post("/api/auth/logout", headers=headers_alice).status_code == 200
+    assert client.get("/api/auth/me", headers=headers_alice).status_code == 401
+

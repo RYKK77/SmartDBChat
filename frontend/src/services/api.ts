@@ -1,5 +1,6 @@
 import type {
   CacheStats,
+  ChatMessage,
   ConnectionMeta,
   ConnectPayload,
   EngineConfig,
@@ -8,13 +9,31 @@ import type {
   SchemaGraphResponse,
   SemanticLayerData,
 } from '../types/api'
+import {
+  getAuthToken,
+  type AuthUser,
+  type ChatSession,
+  type SavedConnectionProfile,
+} from '../utils/storage'
 
 const API_BASE = '/api'
 
+function buildHeaders(extra?: HeadersInit): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  const token = getAuthToken()
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+  if (extra) {
+    Object.assign(headers, extra)
+  }
+  return headers
+}
+
 async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
   const resp = await fetch(`${API_BASE}${url}`, {
-    headers: { 'Content-Type': 'application/json', ...(options?.headers || {}) },
     ...options,
+    headers: buildHeaders(options?.headers),
   })
   if (!resp.ok) {
     let detail = `请求失败 (${resp.status})`
@@ -30,6 +49,77 @@ async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  register: (username: string, password: string) =>
+    requestJson<{ token: string; user: AuthUser }>('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    }),
+
+  login: (username: string, password: string) =>
+    requestJson<{ token: string; user: AuthUser }>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    }),
+
+  logout: () => requestJson<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
+
+  getMe: () => requestJson<{ user: AuthUser }>('/auth/me'),
+
+  getUserState: () =>
+    requestJson<{
+      last_connection: ConnectPayload | null
+      auto_connect_disabled: boolean
+      active_session_id: string | null
+      profiles: SavedConnectionProfile[]
+      sessions: ChatSession[]
+    }>('/user/state'),
+
+  updateUserPreferences: (payload: {
+    last_connection?: ConnectPayload | null
+    update_last_connection?: boolean
+    auto_connect_disabled?: boolean
+    active_session_id?: string | null
+    update_active_session?: boolean
+  }) =>
+    requestJson<{ ok: boolean }>('/user/preferences', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+
+  saveConnectionProfile: (payload: {
+    id?: string
+    name: string
+    payload: ConnectPayload
+  }) =>
+    requestJson<{ profiles: SavedConnectionProfile[] }>('/user/connections', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  deleteConnectionProfile: (profileId: string) =>
+    requestJson<{ profiles: SavedConnectionProfile[] }>(
+      `/user/connections/${encodeURIComponent(profileId)}`,
+      { method: 'DELETE' },
+    ),
+
+  saveChatSession: (
+    sessionId: string,
+    payload: { title: string; messages: ChatMessage[] },
+  ) =>
+    requestJson<{ sessions: ChatSession[] }>(
+      `/user/sessions/${encodeURIComponent(sessionId)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      },
+    ),
+
+  deleteChatSession: (sessionId: string) =>
+    requestJson<{ sessions: ChatSession[] }>(
+      `/user/sessions/${encodeURIComponent(sessionId)}`,
+      { method: 'DELETE' },
+    ),
+
   getHealth: () =>
     requestJson<{ ok: boolean; connected: boolean; connection_meta: ConnectionMeta }>('/health'),
 
@@ -123,7 +213,7 @@ export const api = {
   ) => {
     const resp = await fetch(`${API_BASE}/query/stream`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildHeaders(),
       body: JSON.stringify(payload),
     })
 
