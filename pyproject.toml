@@ -1,0 +1,26 @@
+[project]
+name = "smartdbchat"
+version = "0.2.0"
+description = "基于大语言模型的自然语言数据库查询与可视化系统（NL2SQL + 流式分析 + Plotly 图表 + 语义缓存）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "mysql-connector-python>=9.2.0",
+    "numpy>=1.26.4",
+    "openai>=1.60.0",
+    "pandas>=2.2.0",
+    "plotly>=6.0.0",
+    "pygments>=2.18.0",
+    "requests>=2.32.3",
+    "streamlit>=1.40.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

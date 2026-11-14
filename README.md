@@ -42,33 +42,43 @@ SmartDBChat/
 │   ├── charts.py            # 图表 JSON 解析与 Plotly Figure 构建器
 │   └── engine.py            # SmartDBEngine 核心查询编排引擎
 ├── tests/                   # 单元测试套件
-└── requirements.txt
+├── pyproject.toml           # uv 项目与依赖配置
+├── uv.lock                  # uv 依赖锁文件
+└── requirements.txt         # 兼容传统 pip 的依赖列表
 ```
 
 ## 📋 环境要求
 
 - Python 3.10+
+- [uv](https://docs.astral.sh/uv/)（推荐的 Python 包与虚拟环境管理工具）
 - MySQL 数据库
 - 任意 OpenAI 兼容大模型 API 密钥（或本地 Ollama 服务）
 
 ## 🔧 安装与运行
 
-1. 克隆仓库并安装依赖：
+1. 安装 `uv`（若尚未安装）：
 
 ```bash
-pip install -r requirements.txt
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-2. 启动 Streamlit 应用：
+2. 克隆仓库并使用 `uv` 同步环境与依赖：
 
 ```bash
-streamlit run app.py
+uv sync
 ```
 
-3. 运行单元测试（可选）：
+3. 启动 Streamlit 应用：
 
 ```bash
-pytest -v
+uv run streamlit run app.py
+```
+
+4. 运行单元测试（可选）：
+
+```bash
+uv run pytest -v
 ```
 
 ## 🚀 使用指南
