@@ -246,13 +246,74 @@ textarea {
 }
 
 .split-graph-pane {
-  width: 44%;
-  min-width: 380px;
-  max-width: 680px;
+  min-width: 300px;
+  flex-shrink: 0;
   border-left: 1px solid var(--border);
   background: var(--bg-surface);
   display: flex;
   flex-direction: column;
+}
+
+.split-resizer-vertical {
+  width: 7px;
+  margin-left: -3px;
+  margin-right: -3px;
+  cursor: col-resize;
+  z-index: 15;
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+}
+
+.split-resizer-vertical::after {
+  content: '';
+  width: 2px;
+  height: 36px;
+  border-radius: 999px;
+  background: var(--border-strong);
+  opacity: 0.45;
+  transition: background-color 0.15s ease, opacity 0.15s ease, height 0.15s ease;
+}
+
+.split-resizer-vertical:hover::after,
+.split-resizer-vertical.active::after {
+  background: var(--accent);
+  opacity: 1;
+  height: 56px;
+}
+
+.split-resizer-horizontal {
+  height: 7px;
+  margin-top: -3px;
+  margin-bottom: -3px;
+  cursor: row-resize;
+  z-index: 15;
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+}
+
+.split-resizer-horizontal::after {
+  content: '';
+  height: 2px;
+  width: 40px;
+  border-radius: 999px;
+  background: var(--border-strong);
+  opacity: 0.5;
+  transition: background-color 0.15s ease, opacity 0.15s ease, width 0.15s ease;
+}
+
+.split-resizer-horizontal:hover::after,
+.split-resizer-horizontal.active::after {
+  background: var(--accent);
+  opacity: 1;
+  width: 64px;
 }
 
 /* Controls & Buttons */
@@ -841,7 +902,12 @@ textarea {
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-sm);
   overflow: hidden;
-  transition: all 0.18s ease;
+  cursor: grab;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
+}
+
+.er-node:active {
+  cursor: grabbing;
 }
 
 .er-node.highlighted {
@@ -979,7 +1045,8 @@ textarea {
     z-index: 40;
     box-shadow: var(--shadow-lg);
   }
-  .split-graph-pane {
+  .split-graph-pane,
+  .split-resizer-vertical {
     display: none;
   }
   .grid-2 {

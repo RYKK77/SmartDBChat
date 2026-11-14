@@ -77,6 +77,49 @@ export function App() {
   const [toast, setToast] = useState<{ msg: string; isError?: boolean } | null>(null)
   const toastTimerRef = useRef<number | null>(null)
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
+  const mainContentRef = useRef<HTMLElement | null>(null)
+
+  const [splitGraphWidth, setSplitGraphWidth] = useState<number>(() => {
+    const saved = Number(localStorage.getItem('smartdb_split_graph_width'))
+    if (Number.isFinite(saved) && saved >= 300) return saved
+    return typeof window !== 'undefined'
+      ? Math.min(640, Math.max(380, Math.round(window.innerWidth * 0.42)))
+      : 500
+  })
+  const [isResizingGraph, setIsResizingGraph] = useState(false)
+
+  const handleStartResizeGraph = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    setIsResizingGraph(true)
+    const prevUserSelect = document.body.style.userSelect
+    const prevCursor = document.body.style.cursor
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = 'col-resize'
+
+    let latestWidth = splitGraphWidth
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      const container = mainContentRef.current
+      if (!container) return
+      const rect = container.getBoundingClientRect()
+      const maxWidth = Math.max(340, rect.width - 340)
+      const nextWidth = Math.round(Math.min(maxWidth, Math.max(300, rect.right - moveEvent.clientX)))
+      latestWidth = nextWidth
+      setSplitGraphWidth(nextWidth)
+    }
+
+    const onPointerUp = () => {
+      window.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('pointerup', onPointerUp)
+      document.body.style.userSelect = prevUserSelect
+      document.body.style.cursor = prevCursor
+      setIsResizingGraph(false)
+      localStorage.setItem('smartdb_split_graph_width', String(latestWidth))
+    }
+
+    window.addEventListener('pointermove', onPointerMove)
+    window.addEventListener('pointerup', onPointerUp)
+  }, [splitGraphWidth])
 
   const notify = useCallback((msg: string, isError = false) => {
     setToast({ msg, isError })
@@ -439,7 +482,7 @@ export function App() {
           onSelectTable={handleSelectTableFromSidebar}
         />
 
-        <main className="main-content">
+        <main className="main-content" ref={mainContentRef}>
           {activeView === 'schema' && (
             <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
               <SchemaGraphCanvas
@@ -582,16 +625,25 @@ export function App() {
               </section>
 
               {splitGraphOpen && connected && (
-                <aside className="split-graph-pane">
-                  <SchemaGraphCanvas
-                    graph={schemaGraph}
-                    highlightedTables={highlightedTables}
-                    selectedTable={selectedTable}
-                    onSelectTable={setSelectedTable}
-                    onClose={() => setSplitGraphOpen(false)}
-                    compact
+                <>
+                  <div
+                    className={`split-resizer-vertical ${isResizingGraph ? 'active' : ''}`}
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="调整 Schema 图谱宽度"
+                    onPointerDown={handleStartResizeGraph}
                   />
-                </aside>
+                  <aside className="split-graph-pane" style={{ width: splitGraphWidth }}>
+                    <SchemaGraphCanvas
+                      graph={schemaGraph}
+                      highlightedTables={highlightedTables}
+                      selectedTable={selectedTable}
+                      onSelectTable={setSelectedTable}
+                      onClose={() => setSplitGraphOpen(false)}
+                      compact
+                    />
+                  </aside>
+                </>
               )}
             </>
           )}

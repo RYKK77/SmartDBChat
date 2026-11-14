@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Background,
   Controls,
@@ -7,6 +7,8 @@ import {
   MiniMap,
   Position,
   ReactFlow,
+  useEdgesState,
+  useNodesState,
   type Edge,
   type Node,
   type NodeProps,
@@ -149,30 +151,91 @@ export function SchemaGraphCanvas({
     }
   }
 
-  const { nodes, edges } = useMemo(() => {
-    if (!graph) return { nodes: [], edges: [] }
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const prevGraphRef = useRef<SchemaGraphResponse | null>(null)
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node<TableNodeData>>([])
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
+
+  const [detailsHeight, setDetailsHeight] = useState<number>(() => {
+    const saved = Number(localStorage.getItem('smartdb_schema_details_height'))
+    return Number.isFinite(saved) && saved >= 120 ? saved : 260
+  })
+  const [isResizingDetails, setIsResizingDetails] = useState(false)
+
+  const handleStartResizeDetails = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    setIsResizingDetails(true)
+    const prevUserSelect = document.body.style.userSelect
+    const prevCursor = document.body.style.cursor
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = 'row-resize'
+
+    let latestHeight = detailsHeight
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      const container = containerRef.current
+      if (!container) return
+      const rect = container.getBoundingClientRect()
+      const maxHeight = Math.max(180, rect.height - 180)
+      const nextHeight = Math.round(
+        Math.min(maxHeight, Math.max(120, rect.bottom - moveEvent.clientY)),
+      )
+      latestHeight = nextHeight
+      setDetailsHeight(nextHeight)
+    }
+
+    const onPointerUp = () => {
+      window.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('pointerup', onPointerUp)
+      document.body.style.userSelect = prevUserSelect
+      document.body.style.cursor = prevCursor
+      setIsResizingDetails(false)
+      localStorage.setItem('smartdb_schema_details_height', String(latestHeight))
+    }
+
+    window.addEventListener('pointermove', onPointerMove)
+    window.addEventListener('pointerup', onPointerUp)
+  }, [detailsHeight])
+
+  useEffect(() => {
+    if (!graph) {
+      prevGraphRef.current = null
+      setNodes([])
+      setEdges([])
+      return
+    }
+
+    const isNewGraph = prevGraphRef.current !== graph
+    prevGraphRef.current = graph
 
     // 网格自动布局（根据表数量自适应列数）
     const colsPerRow = compact ? 2 : 3
     const xGap = 285
     const yGap = 290
 
-    const rfNodes: Node<TableNodeData>[] = graph.nodes.map((n, idx) => {
-      const col = idx % colsPerRow
-      const row = Math.floor(idx / colsPerRow)
-      const isHi = highlightSet.has(n.name.toLowerCase())
-      return {
-        id: n.name,
-        type: 'tableCard',
-        position: { x: col * xGap + 24, y: row * yGap + 24 },
-        data: {
-          label: n.name,
-          comment: n.comment,
-          columns: n.columns,
-          highlighted: isHi,
-          dimmed: hasHighlights && !isHi,
-        },
-      }
+    setNodes((prevNodes) => {
+      const existingPos = isNewGraph
+        ? new Map<string, { x: number; y: number }>()
+        : new Map(prevNodes.map((pn) => [pn.id, pn.position]))
+
+      return graph.nodes.map((n, idx) => {
+        const col = idx % colsPerRow
+        const row = Math.floor(idx / colsPerRow)
+        const isHi = highlightSet.has(n.name.toLowerCase())
+        return {
+          id: n.name,
+          type: 'tableCard',
+          draggable: true,
+          position: existingPos.get(n.name) ?? { x: col * xGap + 24, y: row * yGap + 24 },
+          data: {
+            label: n.name,
+            comment: n.comment,
+            columns: n.columns,
+            highlighted: isHi,
+            dimmed: hasHighlights && !isHi,
+          },
+        }
+      })
     })
 
     const rfEdges: Edge[] = graph.edges.map((e, idx) => {
@@ -199,9 +262,8 @@ export function SchemaGraphCanvas({
         },
       }
     })
-
-    return { nodes: rfNodes, edges: rfEdges }
-  }, [graph, highlightSet, hasHighlights, compact])
+    setEdges(rfEdges)
+  }, [graph, highlightSet, hasHighlights, compact, setNodes, setEdges])
 
   if (!graph) {
     return (
@@ -212,7 +274,10 @@ export function SchemaGraphCanvas({
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+    <div
+      ref={containerRef}
+      style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}
+    >
       <div
         style={{
           padding: '10px 14px',
@@ -221,6 +286,7 @@ export function SchemaGraphCanvas({
           alignItems: 'center',
           justifyContent: 'space-between',
           background: 'var(--bg-surface)',
+          flexShrink: 0,
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -240,10 +306,13 @@ export function SchemaGraphCanvas({
         )}
       </div>
 
-      <div style={{ flex: 1, minHeight: 260, position: 'relative' }}>
+      <div style={{ flex: 1, minHeight: 140, position: 'relative' }}>
         <ReactFlow
           nodes={nodes}
           edges={edges}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          nodesDraggable
           nodeTypes={nodeTypes}
           fitView
           fitViewOptions={{ padding: 0.16 }}
@@ -256,18 +325,27 @@ export function SchemaGraphCanvas({
       </div>
 
       {selectedNodeMeta && (
-        <div
-          style={{
-            borderTop: '1px solid var(--border)',
-            background: 'var(--bg-surface)',
-            padding: 12,
-            maxHeight: 290,
-            overflowY: 'auto',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 10,
-          }}
-        >
+        <>
+          <div
+            className={`split-resizer-horizontal ${isResizingDetails ? 'active' : ''}`}
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="调整表结构详情高度"
+            onPointerDown={handleStartResizeDetails}
+          />
+          <div
+            style={{
+              borderTop: '1px solid var(--border)',
+              background: 'var(--bg-surface)',
+              padding: 12,
+              height: detailsHeight,
+              flexShrink: 0,
+              overflowY: 'auto',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+            }}
+          >
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <Table2 size={14} color="var(--accent)" />
@@ -404,6 +482,7 @@ export function SchemaGraphCanvas({
             )}
           </div>
         </div>
+        </>
       )}
     </div>
   )
