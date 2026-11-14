@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 import threading
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -28,6 +30,7 @@ from smartdbchat.db import DatabaseManager, UnsafeSQLError, get_all_modules
 from smartdbchat.engine import SmartDBEngine, _split_ddl_statements
 from smartdbchat.eval.sandbox import SQLiteEvalBackend
 from smartdbchat.llm import LLMClient
+from smartdbchat.mcp_server import create_mcp_server
 from smartdbchat.models import QueryResult, QueryStatus
 from smartdbchat.schema_linker import build_schema_graph
 from smartdbchat.semantic_layer import SemanticLayer
@@ -217,6 +220,147 @@ class UpdatePreferencesRequest(BaseModel):
     update_active_session: bool = False
 
 
+class McpCreateKeyRequest(BaseModel):
+    name: str = "MCP Client Key"
+
+
+class McpToggleKeyRequest(BaseModel):
+    is_active: bool
+
+
+class McpSettingsUpdateRequest(BaseModel):
+    require_api_key: bool
+
+
+class McpCallToolRequest(BaseModel):
+    tool_name: str
+    arguments: Dict[str, Any] = Field(default_factory=dict)
+    api_key: Optional[str] = None
+
+
+_MCP_TOOLS_CATALOG: List[Dict[str, Any]] = [
+    {
+        "name": "list_tables",
+        "description": "列出当前数据库中所有可查询的表名及语义描述（若已配置语义层）。",
+        "parameters": [],
+        "sample_args": {},
+    },
+    {
+        "name": "get_database_schema",
+        "description": "获取数据库 DDL、QueryWeaver 风格 Schema 图谱摘要及语义层上下文。",
+        "parameters": [
+            {
+                "name": "tables",
+                "type": "array[string]",
+                "required": False,
+                "description": "指定表名列表（为空则获取全库或按问题自动链接）",
+            },
+            {
+                "name": "question",
+                "type": "string",
+                "required": False,
+                "description": "自然语言问题（用于触发图谱 Schema Linking 与语义层检索）",
+            },
+        ],
+        "sample_args": {"question": "统计各学院在读学生人数与平均 GPA"},
+    },
+    {
+        "name": "find_join_path",
+        "description": "基于 Schema 图谱查找两张表之间的最短外键 JOIN 路径。",
+        "parameters": [
+            {
+                "name": "from_table",
+                "type": "string",
+                "required": True,
+                "description": "起始表名",
+            },
+            {
+                "name": "to_table",
+                "type": "string",
+                "required": True,
+                "description": "目标表名",
+            },
+        ],
+        "sample_args": {"from_table": "students", "to_table": "courses"},
+    },
+    {
+        "name": "sample_column_values",
+        "description": "探索指定表列的真实去重取值（支持按关键字模糊筛选，解决枚举值不匹配）。",
+        "parameters": [
+            {
+                "name": "table_name",
+                "type": "string",
+                "required": True,
+                "description": "表名",
+            },
+            {
+                "name": "column_name",
+                "type": "string",
+                "required": True,
+                "description": "列名",
+            },
+            {
+                "name": "keyword",
+                "type": "string",
+                "required": False,
+                "description": "可选模糊匹配关键字",
+            },
+            {
+                "name": "limit",
+                "type": "integer",
+                "required": False,
+                "description": "返回最大条数（默认 20）",
+            },
+        ],
+        "sample_args": {"table_name": "students", "column_name": "status", "limit": 10},
+    },
+    {
+        "name": "validate_sql",
+        "description": "使用 sqlglot AST 对 SQL 进行只读安全性与 Schema 一致性校验。",
+        "parameters": [
+            {
+                "name": "sql",
+                "type": "string",
+                "required": True,
+                "description": "待校验的只读 SQL 语句",
+            },
+        ],
+        "sample_args": {
+            "sql": "SELECT department_id, COUNT(*) AS cnt FROM students GROUP BY department_id"
+        },
+    },
+    {
+        "name": "ask_database",
+        "description": "用自然语言提问数据库，返回生成的只读 SQL、查询结果、分析结论、图表配置与后续建议。",
+        "parameters": [
+            {
+                "name": "question",
+                "type": "string",
+                "required": True,
+                "description": "自然语言数据分析问题",
+            },
+            {
+                "name": "mode",
+                "type": "string",
+                "required": False,
+                "description": "查询模式：agent / linked / pipeline",
+            },
+            {
+                "name": "high_accuracy_mode",
+                "type": "boolean",
+                "required": False,
+                "description": "是否开启多候选 Test-Time Scaling 投票",
+            },
+        ],
+        "sample_args": {
+            "question": "统计各学院在读学生的平均 GPA",
+            "mode": "linked",
+            "high_accuracy_mode": False,
+        },
+    },
+]
+
+
 class AppRuntimeState:
     """线程安全的服务端运行时状态管理。"""
 
@@ -333,6 +477,27 @@ def create_app(
             return await call_next(request)
 
         token = _extract_bearer_token(request)
+        if token and token.startswith("sdb_mcp_") and path == "/api/mcp/call":
+            mcp_key_record = state.store.verify_and_touch_mcp_key(token)
+            if not mcp_key_record:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "MCP API Key 无效或已禁用"},
+                )
+            request.state.mcp_key_verified = True
+            return await call_next(request)
+
+        mcp_header_key = (request.headers.get("X-MCP-API-Key") or "").strip()
+        if mcp_header_key and path == "/api/mcp/call" and not token:
+            mcp_key_record = state.store.verify_and_touch_mcp_key(mcp_header_key)
+            if not mcp_key_record:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "MCP API Key 无效或已禁用"},
+                )
+            request.state.mcp_key_verified = True
+            return await call_next(request)
+
         if token:
             user = state.store.verify_token(token)
             if not user:
@@ -938,6 +1103,128 @@ def create_app(
         cache = state.engine.cache if state.engine else state.cache
         cache.clear_cache()
         return {"cleared": True}
+
+    @app.get("/api/mcp/info")
+    def get_mcp_info(request: Request) -> Dict[str, Any]:
+        user = getattr(request.state, "user", None)
+        keys = state.store.list_mcp_keys(user["id"]) if user else []
+        workspace_dir = str(Path(__file__).resolve().parent.parent)
+        return {
+            "server_name": "SmartDBChat",
+            "connected": state.engine is not None,
+            "connection_meta": state.connection_meta,
+            "workspace_dir": workspace_dir,
+            "python_executable": sys.executable,
+            "settings": state.store.get_mcp_settings(),
+            "keys": keys,
+            "tools": _MCP_TOOLS_CATALOG,
+        }
+
+    @app.put("/api/mcp/settings")
+    def update_mcp_settings(req: McpSettingsUpdateRequest, request: Request) -> Dict[str, Any]:
+        _require_user(request)
+        return {"settings": state.store.update_mcp_settings(req.require_api_key)}
+
+    @app.post("/api/mcp/keys")
+    def create_mcp_key(req: McpCreateKeyRequest, request: Request) -> Dict[str, Any]:
+        user = _require_user(request)
+        created = state.store.create_mcp_key(user["id"], req.name)
+        return {
+            "created": created,
+            "keys": state.store.list_mcp_keys(user["id"]),
+        }
+
+    @app.patch("/api/mcp/keys/{key_id}")
+    def toggle_mcp_key(
+        key_id: str, req: McpToggleKeyRequest, request: Request
+    ) -> Dict[str, Any]:
+        user = _require_user(request)
+        try:
+            keys = state.store.toggle_mcp_key(user["id"], key_id, req.is_active)
+            return {"keys": keys}
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    @app.delete("/api/mcp/keys/{key_id}")
+    def delete_mcp_key(key_id: str, request: Request) -> Dict[str, Any]:
+        user = _require_user(request)
+        try:
+            keys = state.store.delete_mcp_key(user["id"], key_id)
+            return {"keys": keys}
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    @app.post("/api/mcp/call")
+    async def call_mcp_tool(req: McpCallToolRequest, request: Request) -> Dict[str, Any]:
+        eng = _require_engine()
+        settings = state.store.get_mcp_settings()
+        already_verified = bool(getattr(request.state, "mcp_key_verified", False))
+        candidate_key = (
+            (req.api_key or "").strip()
+            or (request.headers.get("X-MCP-API-Key") or "").strip()
+        )
+
+        if not already_verified:
+            if settings.get("require_api_key"):
+                if not candidate_key:
+                    raise HTTPException(
+                        status_code=401,
+                        detail="当前已开启 MCP 访问密钥校验，请先创建并选择有效的 MCP Key",
+                    )
+                verified_key = state.store.verify_and_touch_mcp_key(candidate_key)
+                if not verified_key:
+                    raise HTTPException(
+                        status_code=401,
+                        detail="提供的 MCP API Key 无效或已被禁用",
+                    )
+            elif candidate_key:
+                state.store.verify_and_touch_mcp_key(candidate_key)
+
+        valid_tool_names = {t["name"] for t in _MCP_TOOLS_CATALOG}
+        if req.tool_name not in valid_tool_names:
+            raise HTTPException(status_code=400, detail=f"未知的 MCP 工具: {req.tool_name}")
+
+        mcp_srv = create_mcp_server(eng)
+        started = time.perf_counter()
+        try:
+            content_blocks = await mcp_srv.call_tool(req.tool_name, req.arguments or {})
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"MCP 工具执行失败: {exc}") from exc
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
+
+        raw_text = ""
+        if hasattr(content_blocks, "content") and content_blocks.content:
+            first = content_blocks.content[0]
+            raw_text = getattr(first, "text", None) or str(first)
+        elif isinstance(content_blocks, (list, tuple)) and content_blocks:
+            first = content_blocks[0]
+            if hasattr(first, "text"):
+                raw_text = first.text
+            elif isinstance(first, (list, tuple)) and first and hasattr(first[0], "text"):
+                raw_text = first[0].text
+            else:
+                raw_text = str(first)
+        elif isinstance(content_blocks, str):
+            raw_text = content_blocks
+        else:
+            raw_text = str(content_blocks)
+
+        parsed: Any = raw_text
+        try:
+            parsed = json.loads(raw_text)
+        except Exception:
+            parsed = raw_text
+
+        user = getattr(request.state, "user", None)
+        updated_keys = state.store.list_mcp_keys(user["id"]) if user else None
+
+        return {
+            "tool_name": req.tool_name,
+            "duration_ms": duration_ms,
+            "result": parsed,
+            "raw_text": raw_text,
+            "keys": updated_keys,
+        }
 
     dist_path = Path(frontend_dist_dir) if frontend_dist_dir else (
         Path(__file__).resolve().parent.parent / "frontend" / "dist"

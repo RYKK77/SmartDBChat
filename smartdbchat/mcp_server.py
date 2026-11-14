@@ -179,13 +179,23 @@ def create_mcp_server(engine: SmartDBEngine, name: str = "SmartDBChat") -> MCPSe
 
 def build_engine_from_env() -> SmartDBEngine:
     """从环境变量构建 SmartDBEngine 实例，用于独立启动 MCP Server。"""
-    db_cfg = DatabaseConfig(
-        host=os.getenv("SMARTDB_HOST", "localhost"),
-        port=int(os.getenv("SMARTDB_PORT", "3306")),
-        user=os.getenv("SMARTDB_USER", "root"),
-        password=os.getenv("SMARTDB_PASSWORD", ""),
-        database=os.getenv("SMARTDB_DATABASE", ""),
-    )
+    db_type = os.getenv("SMARTDB_DB_TYPE", "mysql").strip().lower()
+    if db_type == "sandbox":
+        from smartdbchat.eval.sandbox import SQLiteEvalBackend
+
+        db_backend: Any = SQLiteEvalBackend()
+        dialect = "sqlite"
+    else:
+        db_cfg = DatabaseConfig(
+            host=os.getenv("SMARTDB_HOST", "localhost"),
+            port=int(os.getenv("SMARTDB_PORT", "3306")),
+            user=os.getenv("SMARTDB_USER", "root"),
+            password=os.getenv("SMARTDB_PASSWORD", ""),
+            database=os.getenv("SMARTDB_DATABASE", ""),
+        )
+        db_backend = DatabaseManager(db_cfg)
+        dialect = "mysql"
+
     llm_cfg = LLMConfig(
         api_key=os.getenv("SMARTDB_API_KEY", os.getenv("OPENAI_API_KEY", "")),
         base_url=os.getenv("SMARTDB_BASE_URL", "https://api.deepseek.com/v1"),
@@ -201,12 +211,13 @@ def build_engine_from_env() -> SmartDBEngine:
         semantic_layer = SemanticLayer.from_yaml_file(sem_path)
 
     return SmartDBEngine(
-        db=DatabaseManager(db_cfg),
+        db=db_backend,
         llm=LLMClient(llm_cfg),
         cache=SemanticQueryCache(cache_config=cache_cfg),
         semantic_layer=semantic_layer,
         enable_ast_schema_check=True,
         max_limit=int(os.getenv("SMARTDB_MAX_LIMIT", "1000")),
+        dialect=dialect,
     )
 
 

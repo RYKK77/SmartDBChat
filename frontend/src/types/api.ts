@@ -201,3 +201,40 @@ export interface CacheStats {
   total_hits: number;
   top_queries: Array<{ query: string; hits: number }>;
 }
+
+export interface McpToolParameter {
+  name: string;
+  type: string;
+  required: boolean;
+  description: string;
+}
+
+export interface McpToolMeta {
+  name: string;
+  description: string;
+  parameters: McpToolParameter[];
+  sample_args: Record<string, any>;
+}
+
+export interface McpApiKeyItem {
+  id: string;
+  name: string;
+  api_key: string;
+  is_active: boolean;
+  call_count: number;
+  created_at: number;
+  last_used_at?: number | null;
+}
+
+export interface McpServerInfo {
+  server_name: string;
+  connected: boolean;
+  connection_meta: ConnectionMeta;
+  workspace_dir: string;
+  python_executable: string;
+  settings: {
+    require_api_key: boolean;
+  };
+  keys: McpApiKeyItem[];
+  tools: McpToolMeta[];
+}

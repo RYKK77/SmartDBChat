@@ -256,3 +256,67 @@ def test_server_auth_rbac_and_user_persistence(tmp_path):
     assert client.post("/api/auth/logout", headers=headers_alice).status_code == 200
     assert client.get("/api/auth/me", headers=headers_alice).status_code == 401
 
+
+def test_server_mcp_keys_and_tool_call(tmp_path):
+    app = create_app(
+        cache_db_path=str(tmp_path / "mcp_api_cache.db"),
+        app_db_path=str(tmp_path / "mcp_api_app.db"),
+    )
+    client = TestClient(app)
+
+    reg = client.post("/api/auth/register", json={"username": "admin", "password": "password123"})
+    token = reg.json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Connect sandbox
+    client.post("/api/connect", headers=headers, json={"db_type": "sandbox"})
+
+    # Get MCP info
+    info = client.get("/api/mcp/info", headers=headers).json()
+    assert len(info["tools"]) == 6
+    assert info["settings"]["require_api_key"] is True
+
+    # Calling without MCP Key when require_api_key=True fails with 401
+    no_key_call = client.post(
+        "/api/mcp/call",
+        headers=headers,
+        json={"tool_name": "list_tables", "arguments": {}},
+    )
+    assert no_key_call.status_code == 401
+
+    # Create MCP Key
+    created_resp = client.post(
+        "/api/mcp/keys",
+        headers=headers,
+        json={"name": "Cursor Local"},
+    )
+    assert created_resp.status_code == 200
+    mcp_key = created_resp.json()["created"]["api_key"]
+    key_id = created_resp.json()["created"]["id"]
+    assert mcp_key.startswith("sdb_mcp_")
+
+    # Call MCP tool using X-MCP-API-Key (even without user session Bearer token!)
+    ext_call = client.post(
+        "/api/mcp/call",
+        headers={"X-MCP-API-Key": mcp_key},
+        json={"tool_name": "list_tables", "arguments": {}},
+    )
+    assert ext_call.status_code == 200
+    ext_data = ext_call.json()
+    assert ext_data["tool_name"] == "list_tables"
+    assert any(t["table"] == "students" for t in ext_data["result"]["tables"])
+
+    # Verify call_count incremented to 1
+    info_after = client.get("/api/mcp/info", headers=headers).json()
+    assert info_after["keys"][0]["call_count"] == 1
+
+    # Disable key -> calling with disabled key returns 401
+    client.patch(f"/api/mcp/keys/{key_id}", headers=headers, json={"is_active": False})
+    disabled_call = client.post(
+        "/api/mcp/call",
+        headers={"X-MCP-API-Key": mcp_key},
+        json={"tool_name": "list_tables", "arguments": {}},
+    )
+    assert disabled_call.status_code == 401
+
+

@@ -91,6 +91,25 @@ class AppStore:
                     active_session_id TEXT,
                     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
                 );
+
+                CREATE TABLE IF NOT EXISTS mcp_api_keys (
+                    id TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    api_key TEXT NOT NULL UNIQUE,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    call_count INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    last_used_at INTEGER,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS mcp_settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    require_api_key INTEGER NOT NULL DEFAULT 1
+                );
+
+                INSERT OR IGNORE INTO mcp_settings (id, require_api_key) VALUES (1, 1);
                 """
             )
 
@@ -410,3 +429,113 @@ class AppStore:
                 (session_id, user_id),
             )
         return self.get_user_state(user_id)["sessions"]
+
+    def get_mcp_settings(self) -> Dict[str, Any]:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT require_api_key FROM mcp_settings WHERE id = 1"
+            ).fetchone()
+            return {"require_api_key": bool(row["require_api_key"]) if row else True}
+
+    def update_mcp_settings(self, require_api_key: bool) -> Dict[str, Any]:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE mcp_settings SET require_api_key = ? WHERE id = 1",
+                (1 if require_api_key else 0,),
+            )
+        return self.get_mcp_settings()
+
+    def list_mcp_keys(self, user_id: int) -> List[Dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, name, api_key, is_active, call_count, created_at, last_used_at
+                FROM mcp_api_keys
+                WHERE user_id = ?
+                ORDER BY created_at DESC
+                """,
+                (user_id,),
+            ).fetchall()
+            return [
+                {
+                    "id": r["id"],
+                    "name": r["name"],
+                    "api_key": r["api_key"],
+                    "is_active": bool(r["is_active"]),
+                    "call_count": int(r["call_count"] or 0),
+                    "created_at": int(r["created_at"]),
+                    "last_used_at": int(r["last_used_at"]) if r["last_used_at"] else None,
+                }
+                for r in rows
+            ]
+
+    def create_mcp_key(self, user_id: int, name: str) -> Dict[str, Any]:
+        clean_name = (name or "").strip() or "MCP Client Key"
+        now = int(time.time() * 1000)
+        key_id = f"mcpk-{now}-{secrets.token_hex(3)}"
+        api_key = f"sdb_mcp_{secrets.token_urlsafe(24)}"
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO mcp_api_keys (id, user_id, name, api_key, is_active, call_count, created_at, last_used_at)
+                VALUES (?, ?, ?, ?, 1, 0, ?, NULL)
+                """,
+                (key_id, user_id, clean_name, api_key, now),
+            )
+        return {
+            "id": key_id,
+            "name": clean_name,
+            "api_key": api_key,
+            "is_active": True,
+            "call_count": 0,
+            "created_at": now,
+            "last_used_at": None,
+        }
+
+    def toggle_mcp_key(self, user_id: int, key_id: str, is_active: bool) -> List[Dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            owner_row = conn.execute(
+                "SELECT user_id FROM mcp_api_keys WHERE id = ?", (key_id,)
+            ).fetchone()
+            if owner_row and int(owner_row["user_id"]) != user_id:
+                raise PermissionError("无权修改其他用户的 MCP 密钥")
+            conn.execute(
+                "UPDATE mcp_api_keys SET is_active = ? WHERE id = ? AND user_id = ?",
+                (1 if is_active else 0, key_id, user_id),
+            )
+        return self.list_mcp_keys(user_id)
+
+    def delete_mcp_key(self, user_id: int, key_id: str) -> List[Dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            owner_row = conn.execute(
+                "SELECT user_id FROM mcp_api_keys WHERE id = ?", (key_id,)
+            ).fetchone()
+            if owner_row and int(owner_row["user_id"]) != user_id:
+                raise PermissionError("无权删除其他用户的 MCP 密钥")
+            conn.execute(
+                "DELETE FROM mcp_api_keys WHERE id = ? AND user_id = ?",
+                (key_id, user_id),
+            )
+        return self.list_mcp_keys(user_id)
+
+    def verify_and_touch_mcp_key(self, api_key: str) -> Optional[Dict[str, Any]]:
+        clean_key = (api_key or "").strip()
+        if not clean_key:
+            return None
+        now = int(time.time() * 1000)
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT id, user_id, name, is_active FROM mcp_api_keys WHERE api_key = ?",
+                (clean_key,),
+            ).fetchone()
+            if not row or not bool(row["is_active"]):
+                return None
+            conn.execute(
+                "UPDATE mcp_api_keys SET call_count = call_count + 1, last_used_at = ? WHERE id = ?",
+                (now, row["id"]),
+            )
+            return {
+                "id": row["id"],
+                "user_id": int(row["user_id"]),
+                "name": row["name"],
+            }

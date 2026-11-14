@@ -10,6 +10,7 @@ import {
   PanelRight,
   PlugZap,
   Send,
+  Server,
   Shield,
   Sparkles,
   Sun,
@@ -17,6 +18,7 @@ import {
 } from 'lucide-react'
 import { AuthModal } from './components/AuthModal'
 import { ConnectionModal } from './components/ConnectionModal'
+import { McpStudio } from './components/McpStudio'
 import { MessageCard } from './components/MessageCard'
 import { SchemaGraphCanvas } from './components/SchemaGraphCanvas'
 import { SemanticLayerStudio } from './components/SemanticLayerStudio'
@@ -32,7 +34,7 @@ import type {
   SchemaGraphResponse,
 } from './types/api'
 
-type ActiveView = 'chat' | 'schema' | 'semantic'
+type ActiveView = 'chat' | 'schema' | 'semantic' | 'mcp'
 
 const STARTER_PROMPTS = [
   {
@@ -581,6 +583,14 @@ export function App() {
               <BookOpen size={14} />
               语义层中心
             </button>
+            <button
+              type="button"
+              className={`nav-tab ${activeView === 'mcp' ? 'active' : ''}`}
+              onClick={() => setActiveView('mcp')}
+            >
+              <Server size={14} />
+              MCP 服务中心
+            </button>
           </nav>
         </div>
 
@@ -688,6 +698,14 @@ export function App() {
           )}
 
           {activeView === 'semantic' && <SemanticLayerStudio onNotify={notify} />}
+
+          {activeView === 'mcp' && (
+            <McpStudio
+              lastConnection={lastConnection}
+              onOpenConnect={() => setConnectModalOpen(true)}
+              onNotify={notify}
+            />
+          )}
 
           {activeView === 'chat' && (
             <>

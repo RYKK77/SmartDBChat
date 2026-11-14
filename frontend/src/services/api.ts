@@ -4,6 +4,8 @@ import type {
   ConnectionMeta,
   ConnectPayload,
   EngineConfig,
+  McpApiKeyItem,
+  McpServerInfo,
   ProviderPreset,
   QueryResultPayload,
   SchemaGraphResponse,
@@ -197,6 +199,48 @@ export const api = {
   getCacheStats: () => requestJson<CacheStats>('/cache/stats'),
 
   clearCache: () => requestJson<{ cleared: boolean }>('/cache', { method: 'DELETE' }),
+
+  getMcpInfo: () => requestJson<McpServerInfo>('/mcp/info'),
+
+  updateMcpSettings: (require_api_key: boolean) =>
+    requestJson<{ settings: { require_api_key: boolean } }>('/mcp/settings', {
+      method: 'PUT',
+      body: JSON.stringify({ require_api_key }),
+    }),
+
+  createMcpKey: (name: string) =>
+    requestJson<{ created: McpApiKeyItem; keys: McpApiKeyItem[] }>('/mcp/keys', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+
+  toggleMcpKey: (keyId: string, is_active: boolean) =>
+    requestJson<{ keys: McpApiKeyItem[] }>(`/mcp/keys/${encodeURIComponent(keyId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ is_active }),
+    }),
+
+  deleteMcpKey: (keyId: string) =>
+    requestJson<{ keys: McpApiKeyItem[] }>(`/mcp/keys/${encodeURIComponent(keyId)}`, {
+      method: 'DELETE',
+    }),
+
+  callMcpTool: (payload: {
+    tool_name: string
+    arguments: Record<string, any>
+    api_key?: string
+  }) =>
+    requestJson<{
+      tool_name: string
+      duration_ms: number
+      result: any
+      raw_text: string
+      keys?: McpApiKeyItem[]
+    }>('/mcp/call', {
+      method: 'POST',
+      headers: payload.api_key ? { 'X-MCP-API-Key': payload.api_key } : undefined,
+      body: JSON.stringify(payload),
+    }),
 
   streamQuery: async (
     payload: {
