@@ -21,18 +21,30 @@ def clean_json_comments(json_str: str) -> str:
 def extract_chart_config(response_text: str) -> Optional[Dict[str, Any]]:
     """从 LLM 响应文本中提取并解析图表配置 JSON。"""
     cleaned_text = clean_json_comments(response_text)
-    matches = re.findall(r"```json\s*(.*?)\s*```", cleaned_text, re.DOTALL)
+    matches = re.findall(r"```(?:json)?\s*(.*?)\s*```", cleaned_text, re.DOTALL | re.IGNORECASE)
     if not matches:
         return None
 
-    try:
-        parsed = json.loads(matches[0])
+    for block in matches:
+        try:
+            parsed = json.loads(block)
+        except json.JSONDecodeError:
+            continue
+
         if isinstance(parsed, dict):
-            return parsed
-        return None
-    except json.JSONDecodeError as exc:
-        logger.warning("图表配置 JSON 格式错误，无法解析: %s", exc)
-        return None
+            if "charts" in parsed and isinstance(parsed["charts"], list):
+                return parsed
+            if "type" in parsed and "data" in parsed:
+                return {"charts": [parsed]}
+        elif isinstance(parsed, list):
+            chart_items = [
+                item for item in parsed if isinstance(item, dict) and "type" in item and "data" in item
+            ]
+            if chart_items:
+                return {"charts": chart_items}
+
+    logger.warning("图表配置 JSON 格式错误，无法解析")
+    return None
 
 
 def build_plotly_figure(chart: Dict[str, Any]) -> Optional[go.Figure]:
@@ -231,8 +243,15 @@ def build_plotly_figure(chart: Dict[str, Any]) -> Optional[go.Figure]:
 
 
 def strip_chart_json_block(response_text: str) -> str:
-    """移除 LLM 分析文本末尾用于图表渲染的 ```json``` 代码块，避免在界面直接暴露配置 JSON。"""
-    cleaned = re.sub(r"```json\s*\{[\s\S]*?\"charts\"[\s\S]*?\}\s*```", "", response_text)
+    """移除 LLM 分析文本中用于图表渲染的 JSON 代码块，避免在界面直接暴露配置 JSON。"""
+    patterns = [
+        r'```(?:json)?\s*\{[\s\S]*?"charts"[\s\S]*?\}\s*```',
+        r'```(?:json)?\s*\[\s*\{[\s\S]*?"type"[\s\S]*?"data"[\s\S]*?\}\s*\]\s*```',
+        r'```(?:json)?\s*\{[\s\S]*?"type"[\s\S]*?"data"[\s\S]*?\}\s*```',
+    ]
+    cleaned = response_text
+    for pattern in patterns:
+        cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
     return cleaned.strip()
 
 

@@ -1,11 +1,14 @@
-import { useEffect, useState } from 'react'
+import { isValidElement, useEffect, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
+import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
   Activity,
   AlertTriangle,
   BarChart3,
   Check,
+  ChevronDown,
+  ChevronRight,
   Code2,
   Copy,
   Database,
@@ -30,6 +33,65 @@ interface MessageCardProps {
 }
 
 type CardTab = 'analysis' | 'table' | 'sql' | 'trace'
+
+function CollapsibleCodeBlock({ children }: { children?: React.ReactNode }) {
+  const [expanded, setExpanded] = useState(false)
+  const [copiedCode, setCopiedCode] = useState(false)
+
+  let language = 'code'
+  let rawCode = ''
+
+  if (isValidElement<{ className?: string; children?: React.ReactNode }>(children)) {
+    const cls = children.props.className || ''
+    const match = /language-([\w-]+)/.exec(cls)
+    if (match) {
+      language = match[1]
+    }
+    const content = children.props.children
+    rawCode = Array.isArray(content) ? content.join('') : String(content ?? '')
+  } else {
+    rawCode = String(children ?? '')
+  }
+
+  const trimmed = rawCode.replace(/\n$/, '')
+  const lineCount = trimmed ? trimmed.split('\n').length : 0
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(trimmed)
+    setCopiedCode(true)
+    setTimeout(() => setCopiedCode(false), 1500)
+  }
+
+  return (
+    <div className="md-code-block">
+      <div className="md-code-header">
+        <button
+          type="button"
+          className="md-code-toggle"
+          onClick={() => setExpanded((prev) => !prev)}
+        >
+          {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          <span>{language.toUpperCase()}</span>
+          <span className="md-code-lines">{lineCount} 行</span>
+          <span className="md-code-action">{expanded ? '收起' : '展开'}</span>
+        </button>
+        <button type="button" className="md-code-copy" onClick={handleCopy}>
+          {copiedCode ? <Check size={12} /> : <Copy size={12} />}
+          <span>{copiedCode ? '已复制' : '复制'}</span>
+        </button>
+      </div>
+      {expanded && (
+        <pre className="md-code-pre">
+          <code>{trimmed}</code>
+        </pre>
+      )}
+    </div>
+  )
+}
+
+const markdownComponents: Components = {
+  pre: ({ children }) => <CollapsibleCodeBlock>{children}</CollapsibleCodeBlock>,
+}
 
 export function MessageCard({
   message,
@@ -111,7 +173,9 @@ export function MessageCard({
           )}
           {message.streamingText && (
             <div className="markdown-body">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.streamingText}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                {message.streamingText}
+              </ReactMarkdown>
             </div>
           )}
         </div>
@@ -126,7 +190,9 @@ export function MessageCard({
         <div className="msg-avatar">AI</div>
         <div className="assistant-card">
           <div className="markdown-body">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+              {message.content}
+            </ReactMarkdown>
           </div>
         </div>
       </div>
@@ -310,7 +376,7 @@ export function MessageCard({
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             {(res.clean_markdown || res.markdown_answer) && (
               <div className="markdown-body">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                   {res.clean_markdown || res.markdown_answer}
                 </ReactMarkdown>
               </div>

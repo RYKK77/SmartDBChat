@@ -72,3 +72,19 @@ def test_strip_chart_json_block_and_malformed_resilience():
     }
     figs = build_figures(bad_config)
     assert len(figs) == 1
+
+
+def test_extract_and_strip_array_chart_json_block():
+    from smartdbchat.charts import strip_chart_json_block
+
+    raw = (
+        "二、可视化方案\n\n"
+        "```json\n"
+        '[{"type": "bar", "title": "GPA", "data": {"labels": ["CS"], "values": [3.8]}}]\n'
+        "```"
+    )
+    config = extract_chart_config(raw)
+    assert config is not None
+    assert len(config["charts"]) == 1
+    assert config["charts"][0]["type"] == "bar"
+    assert strip_chart_json_block(raw) == "二、可视化方案"
