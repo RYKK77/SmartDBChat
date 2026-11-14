@@ -1,5 +1,5 @@
 import re
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
@@ -36,13 +36,25 @@ class LLMClient:
             base_url=config.base_url,
         )
 
+    def chat_completion(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+    ) -> str:
+        """同步调用对话补全接口，返回原始文本响应。"""
+        kwargs: Dict[str, Any] = {
+            "model": model or self.config.model,
+            "messages": messages,
+        }
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        response = self.client.chat.completions.create(**kwargs)
+        return (response.choices[0].message.content or "").strip()
+
     def generate_sql(self, messages: List[Dict[str, str]]) -> str:
         """同步生成并清洗 SQL 语句。"""
-        response = self.client.chat.completions.create(
-            model=self.config.model,
-            messages=messages,
-        )
-        raw_sql = (response.choices[0].message.content or "").strip()
+        raw_sql = self.chat_completion(messages)
         return clean_sql_response(raw_sql)
 
     def stream_analysis(
