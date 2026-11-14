@@ -7,6 +7,7 @@ from smartdbchat.config import (
     EmbeddingConfig,
     LLMConfig,
 )
+from smartdbchat.agent import AgentConfig
 from smartdbchat.db import DatabaseManager, get_all_modules
 from smartdbchat.engine import SmartDBEngine
 from smartdbchat.llm import LLMClient
@@ -28,7 +29,14 @@ def _connect_engine(
         db_manager.connect()
 
         llm_client = LLMClient(llm_config)
-        engine = SmartDBEngine(db=db_manager, llm=llm_client, cache=cache_system)
+        agent_cfg = AgentConfig(max_steps=int(st.session_state.get("agent_max_steps", 8)))
+        engine = SmartDBEngine(
+            db=db_manager,
+            llm=llm_client,
+            cache=cache_system,
+            agent_config=agent_cfg,
+            default_mode=st.session_state.get("query_mode", "agent"),
+        )
         st.session_state.engine = engine
         st.session_state.connection_meta = {
             "host": db_config.host,
@@ -130,6 +138,26 @@ def render_sidebar() -> None:
                 min_value=0,
                 max_value=5,
                 value=st.session_state.get("max_retries", 2),
+                step=1,
+            )
+            mode_options = {
+                "agent": "Agent 智能探索 (Tool Use + Schema Linking)",
+                "linked": "Schema Linking 增强 (裁剪 + 重试)",
+                "pipeline": "传统单轮模式 (全量 DDL)",
+            }
+            mode_keys = list(mode_options.keys())
+            current_mode = st.session_state.get("query_mode", "agent")
+            st.session_state.query_mode = st.selectbox(
+                "查询执行模式",
+                mode_keys,
+                index=mode_keys.index(current_mode) if current_mode in mode_keys else 0,
+                format_func=lambda k: mode_options[k],
+            )
+            st.session_state.agent_max_steps = st.number_input(
+                "Agent 最大探索步数",
+                min_value=2,
+                max_value=15,
+                value=st.session_state.get("agent_max_steps", 8),
                 step=1,
             )
 

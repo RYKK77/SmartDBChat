@@ -19,6 +19,10 @@ def init_session_state() -> None:
         st.session_state.selected_module = None
     if "max_retries" not in st.session_state:
         st.session_state.max_retries = 2
+    if "query_mode" not in st.session_state:
+        st.session_state.query_mode = "agent"
+    if "agent_max_steps" not in st.session_state:
+        st.session_state.agent_max_steps = 8
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if "connection_meta" not in st.session_state:

@@ -83,3 +83,97 @@ def test_engine_blocks_unsafe_sql_and_returns_invalid_status(tmp_path):
     assert res.status == QueryStatus.INVALID_SQL
     assert not res.is_success
     assert "DROP" in (res.error or "")
+
+
+def test_database_manager_implements_database_backend():
+    from smartdbchat.agent import DatabaseBackend
+    from smartdbchat.db import DatabaseManager
+
+    mgr = DatabaseManager(DatabaseConfig(database="school"))
+    assert isinstance(mgr, DatabaseBackend)
+
+
+def test_engine_linked_mode_with_sqlite_sandbox(tmp_path):
+    from smartdbchat.eval.sandbox import SQLiteEvalBackend
+
+    backend = SQLiteEvalBackend()
+    llm = MagicMock()
+    llm.generate_sql.return_value = (
+        "SELECT d.name, COUNT(s.id) AS cnt "
+        "FROM departments d JOIN students s ON d.id = s.department_id "
+        "WHERE s.status = '在读' GROUP BY d.id, d.name"
+    )
+    llm.stream_analysis.return_value = "统计完成。"
+
+    cache = _make_cache(tmp_path)
+    engine = SmartDBEngine(db=backend, llm=llm, cache=cache, default_mode="linked")
+    res = engine.run_query("统计各学院在读学生人数")
+
+    assert res.status == QueryStatus.SUCCESS
+    assert res.mode == "linked"
+    assert "students" in res.linked_tables
+    assert "departments" in res.linked_tables
+    assert len(res.rows) > 0
+
+
+def test_engine_agent_mode_and_multiturn_bypasses_cache(tmp_path):
+    import json
+    from types import SimpleNamespace
+    from smartdbchat.eval.sandbox import SQLiteEvalBackend
+
+    backend = SQLiteEvalBackend()
+
+    # 构造支持 tool_calls 的 fake OpenAI client
+    tc1 = SimpleNamespace(
+        id="call_1",
+        function=SimpleNamespace(
+            name="get_distinct_values",
+            arguments=json.dumps({"table_name": "courses", "column_name": "course_type"}),
+        ),
+    )
+    tc2 = SimpleNamespace(
+        id="call_2",
+        function=SimpleNamespace(
+            name="execute_sql",
+            arguments=json.dumps(
+                {"sql": "SELECT title, credits FROM courses WHERE course_type = '必修'"}
+            ),
+        ),
+    )
+    responses = [
+        SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="查看课程类型枚举", tool_calls=[tc1]))]
+        ),
+        SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="执行查询", tool_calls=[tc2]))]
+        ),
+        SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="已完成查询", tool_calls=None))]
+        ),
+    ]
+
+    fake_openai = MagicMock()
+    fake_openai.chat.completions.create.side_effect = responses
+
+    llm = MagicMock()
+    llm.client = fake_openai
+    llm.config = SimpleNamespace(model="fake-model")
+    # 返回非法图表类型，验证 validate_chart_config 会安全过滤
+    llm.stream_analysis.return_value = (
+        '共找到多门必修课。\n```json\n{"charts": [{"type": "unknown_type", "data": {}}]}\n```'
+    )
+
+    cache = _make_cache(tmp_path)
+    engine = SmartDBEngine(db=backend, llm=llm, cache=cache, default_mode="agent")
+
+    res = engine.run_query(
+        "查询所有必修课程",
+        history=[{"role": "user", "content": "先看看课程表"}],
+    )
+    assert res.status == QueryStatus.SUCCESS
+    assert res.mode == "agent"
+    assert len(res.agent_steps) >= 2
+    assert res.chart_config is None
+    # 多轮对话不应写入单句缓存
+    assert cache.get_cache_stats().total_entries == 0
+

@@ -45,6 +45,9 @@ class QueryResult:
     error: Optional[str] = None
     sql_prompts: List[List[Dict[str, str]]] = field(default_factory=list)
     answer_prompts: Optional[List[Dict[str, str]]] = None
+    linked_tables: List[str] = field(default_factory=list)
+    agent_steps: List[Dict[str, Any]] = field(default_factory=list)
+    mode: str = "pipeline"
 
     @property
     def is_success(self) -> bool:

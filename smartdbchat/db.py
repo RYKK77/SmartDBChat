@@ -195,6 +195,63 @@ class DatabaseManager:
 
         return "\n\n".join(schema_info)
 
+    def list_tables(self) -> List[str]:
+        """列出当前数据库的全部表名。"""
+        self._ensure_connected()
+        self.cursor.execute(
+            """
+            SELECT TABLE_NAME
+            FROM information_schema.TABLES
+            WHERE TABLE_SCHEMA = %s
+            ORDER BY TABLE_NAME
+            """,
+            (self.config.database,),
+        )
+        rows = self.cursor.fetchall()
+        self._drain_cursor()
+        return [row["TABLE_NAME"] for row in rows]
+
+    @staticmethod
+    def _sanitize_identifier(identifier: str) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9_]+", identifier or ""):
+            raise ValueError(f"非法的数据库标识符: {identifier!r}")
+        return identifier
+
+    def explain_sql(self, sql: str) -> Dict[str, Any]:
+        """校验只读安全性并执行 EXPLAIN 检查 SQL 语法与执行计划。"""
+        is_valid, reason = validate_read_only_sql(sql)
+        if not is_valid:
+            raise UnsafeSQLError(reason or "不安全的 SQL 语句")
+
+        cleaned = sql.strip().rstrip(";")
+        self._ensure_connected()
+        try:
+            self.cursor.execute(f"EXPLAIN {cleaned}")
+            plan_rows = _normalize_rows(list(self.cursor.fetchall() or []))
+            return {"valid": True, "plan": plan_rows}
+        except Exception:
+            self._drain_cursor()
+            raise
+
+    def sample_table_rows(self, table_name: str, limit: int = 3) -> List[Dict[str, Any]]:
+        """安全采样指定表的前 N 行数据。"""
+        safe_table = self._sanitize_identifier(table_name)
+        safe_limit = max(1, min(int(limit), 10))
+        return self.execute_query(f"SELECT * FROM `{safe_table}` LIMIT {safe_limit}")
+
+    def get_distinct_values(
+        self, table_name: str, column_name: str, limit: int = 20
+    ) -> List[Any]:
+        """获取指定表列的去重非空示例值（用于 Value Linking）。"""
+        safe_table = self._sanitize_identifier(table_name)
+        safe_col = self._sanitize_identifier(column_name)
+        safe_limit = max(1, min(int(limit), 50))
+        rows = self.execute_query(
+            f"SELECT DISTINCT `{safe_col}` AS val FROM `{safe_table}` "
+            f"WHERE `{safe_col}` IS NOT NULL LIMIT {safe_limit}"
+        )
+        return [row["val"] for row in rows if "val" in row]
+
     def get_specific_schema_info(self, tables: List[str]) -> str:
         """获取指定表的建表语句，未找到时返回提示文本。"""
         if not tables:

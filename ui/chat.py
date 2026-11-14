@@ -65,7 +65,13 @@ def _render_assistant_payload(
         )
 
     with tab_sql:
+        st.caption(f"执行模式: `{result.mode}`")
+        if result.linked_tables:
+            st.write("Schema Linking 锁定表:", result.linked_tables)
         st.code(result.sql, language="sql")
+        if result.agent_steps:
+            with st.expander(f"Agent 工具调用轨迹 ({len(result.agent_steps)} 步)", expanded=False):
+                st.write(result.agent_steps)
         st.write("执行尝试记录:", [vars(a) for a in result.attempts])
         if result.sql_prompts:
             with st.expander("SQL 生成 Prompts", expanded=False):
@@ -75,7 +81,21 @@ def _render_assistant_payload(
                 st.write(result.answer_prompts)
 
 
+def _build_conversation_history(messages: list[dict[str, Any]], max_turns: int = 4) -> list[dict[str, str]]:
+    """从最近对话历史中提取多轮上下文（问题 + 生成的 SQL）。"""
+    history: list[dict[str, str]] = []
+    for msg in messages[-(max_turns * 2) :]:
+        if msg["role"] == "user":
+            history.append({"role": "user", "content": msg["content"]})
+        elif msg["role"] == "assistant" and msg.get("result") is not None:
+            res: QueryResult = msg["result"]
+            if res.sql:
+                history.append({"role": "assistant", "content": f"上一步执行的 SQL: {res.sql}"})
+    return history
+
+
 def _execute_and_append(engine: SmartDBEngine, prompt: str) -> None:
+    history = _build_conversation_history(st.session_state.messages)
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -97,6 +117,8 @@ def _execute_and_append(engine: SmartDBEngine, prompt: str) -> None:
             max_retries=int(st.session_state.get("max_retries", 2)),
             on_status=on_status,
             on_stream=on_stream,
+            mode=st.session_state.get("query_mode", "agent"),
+            history=history or None,
         )
         elapsed = time.perf_counter() - start
         status_container.update(
