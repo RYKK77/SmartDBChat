@@ -55,3 +55,20 @@ def test_build_figures_supports_graph_objects_charts():
     }
     figures = build_figures(config)
     assert len(figures) == 4
+
+
+def test_strip_chart_json_block_and_malformed_resilience():
+    from smartdbchat.charts import strip_chart_json_block
+
+    raw = '这是分析结论。\n\n```json\n{"charts": [{"type": "pie"}]}\n```'
+    assert strip_chart_json_block(raw) == "这是分析结论。"
+
+    # 即使其中一个图表配置异常，也不应影响其他图表或抛出异常
+    bad_config = {
+        "charts": [
+            {"type": "pie", "data": {"labels": ["A"], "values": [1]}},
+            {"type": "pie", "data": {"labels": ["A", "B"], "values": "invalid_not_list"}},
+        ]
+    }
+    figs = build_figures(bad_config)
+    assert len(figs) == 1

@@ -128,6 +128,16 @@ class SmartDBEngine:
 
         if not used_cache:
             schema_info, is_filtered = self._resolve_schema(module, on_status)
+            if not schema_info.strip():
+                return QueryResult(
+                    status=QueryStatus.ERROR,
+                    sql=sql,
+                    rows=[],
+                    cache_hit=cache_hit,
+                    attempts=attempts,
+                    error="当前数据库未找到可用的表结构信息，请检查数据库名或表权限",
+                    sql_prompts=sql_prompts,
+                )
 
             # 如果不是缓存失败触发的重试，先进行首次生成
             if cache_hit is None:

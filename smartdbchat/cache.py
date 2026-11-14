@@ -244,7 +244,7 @@ class SemanticQueryCache:
         try:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT sql, query_text FROM query_cache WHERE query_hash = ?",
+                "SELECT sql, query_text, created_at FROM query_cache WHERE query_hash = ?",
                 (query_hash,),
             )
             result = cursor.fetchone()
@@ -256,7 +256,7 @@ class SemanticQueryCache:
                 if similar:
                     similar_hash, similarity, match_type = similar
                     cursor.execute(
-                        "SELECT sql, query_text FROM query_cache WHERE query_hash = ?",
+                        "SELECT sql, query_text, created_at FROM query_cache WHERE query_hash = ?",
                         (similar_hash,),
                     )
                     result = cursor.fetchone()
@@ -265,12 +265,20 @@ class SemanticQueryCache:
             if not result:
                 return None
 
+            sql, cached_query, created_at = result
+            if created_at and self.is_cache_expired(created_at):
+                cursor.execute(
+                    "DELETE FROM query_cache WHERE query_hash = ?",
+                    (query_hash,),
+                )
+                conn.commit()
+                return None
+
             cursor.execute(
                 "UPDATE query_cache SET accessed_at = ?, access_count = access_count + 1 WHERE query_hash = ?",
                 (datetime.now().isoformat(), query_hash),
             )
             conn.commit()
-            sql, cached_query = result
             return CacheHit(
                 sql=sql,
                 matched_query=cached_query,

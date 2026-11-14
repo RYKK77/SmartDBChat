@@ -63,7 +63,29 @@ def validate_read_only_sql(sql: str) -> Tuple[bool, Optional[str]]:
         if re.search(rf"\b{keyword}\b", without_strings, flags=re.IGNORECASE):
             return False, f"检测到潜在写操作或高危关键字: {keyword}"
 
+    if re.search(r"\bINTO\s+(?:OUTFILE|DUMPFILE)\b", without_strings, flags=re.IGNORECASE):
+        return False, "禁止使用 INTO OUTFILE / DUMPFILE 导出文件"
+
+    if re.search(r"\bFOR\s+UPDATE\b", without_strings, flags=re.IGNORECASE):
+        return False, "禁止执行带锁的 FOR UPDATE 查询"
+
     return True, None
+
+
+def _normalize_value(value: Any) -> Any:
+    """将 MySQL 返回的 Decimal / 日期类型规范化为标准 Python 基础类型。"""
+    from datetime import date, datetime
+    from decimal import Decimal
+
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return value
+
+
+def _normalize_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [{k: _normalize_value(v) for k, v in row.items()} for row in rows]
 
 
 def extract_tables_from_sql(sql: str) -> List[str]:
@@ -109,7 +131,7 @@ class DatabaseManager:
             pass
 
     def execute_query(self, sql: str) -> List[Dict[str, Any]]:
-        """校验并执行只读 SQL 查询，返回字典列表。"""
+        """校验并执行只读 SQL 查询，返回规范化后的字典列表。"""
         is_valid, reason = validate_read_only_sql(sql)
         if not is_valid:
             raise UnsafeSQLError(reason or "不安全的 SQL 语句")
@@ -118,7 +140,7 @@ class DatabaseManager:
         try:
             self.cursor.execute(sql)
             result = self.cursor.fetchall()
-            return list(result) if result else []
+            return _normalize_rows(list(result)) if result else []
         except Exception:
             self._drain_cursor()
             try:

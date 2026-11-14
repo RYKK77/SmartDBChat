@@ -84,3 +84,24 @@ def test_embedding_supports_openai_compatible_and_ollama_legacy(tmp_path, monkey
     assert vec2 == [0.4, 0.5]
     assert mock_post.call_args[0][0] == "http://localhost:11434/api/embeddings"
 
+
+def test_cache_expiry_evicts_stale_entry(tmp_path):
+    import sqlite3
+    from datetime import datetime, timedelta
+
+    db_file = str(tmp_path / "exp.db")
+    cache = SemanticQueryCache(
+        config=CacheConfig(db_path=db_file, expiry_days=7),
+    )
+    cache.embedding_available = False
+    cache.save_to_cache("old query", "school", "SELECT 1")
+
+    old_ts = (datetime.now() - timedelta(days=10)).isoformat()
+    conn = sqlite3.connect(db_file)
+    conn.execute("UPDATE query_cache SET created_at = ?", (old_ts,))
+    conn.commit()
+    conn.close()
+
+    assert cache.get_from_cache("old query", "school") is None
+    assert cache.get_cache_stats().total_entries == 0
+

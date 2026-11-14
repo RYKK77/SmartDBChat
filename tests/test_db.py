@@ -29,11 +29,37 @@ def test_validate_read_only_sql_blocks_mutations_and_multi_statements():
         "UPDATE students SET name = 'x'",
         "INSERT INTO students VALUES (1, 'a')",
         "SELECT 1; DROP TABLE students;",
+        "SELECT * FROM students INTO OUTFILE '/tmp/out.csv'",
+        "SELECT * FROM students FOR UPDATE",
         "   ",
     ]:
         ok, err = validate_read_only_sql(bad_sql)
         assert ok is False
         assert err is not None
+
+
+def test_normalize_rows_converts_decimal_and_datetime():
+    from datetime import date, datetime
+    from decimal import Decimal
+    from smartdbchat.db import _normalize_rows
+
+    rows = [
+        {
+            "avg_score": Decimal("91.50"),
+            "created": datetime(2026, 11, 13, 12, 0, 0),
+            "day": date(2026, 11, 13),
+            "name": "Alice",
+        }
+    ]
+    normalized = _normalize_rows(rows)
+    assert normalized == [
+        {
+            "avg_score": 91.5,
+            "created": "2026-11-13T12:00:00",
+            "day": "2026-11-13",
+            "name": "Alice",
+        }
+    ]
 
 
 def test_extract_tables_from_sql():

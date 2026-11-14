@@ -230,6 +230,12 @@ def build_plotly_figure(chart: Dict[str, Any]) -> Optional[go.Figure]:
     return None
 
 
+def strip_chart_json_block(response_text: str) -> str:
+    """移除 LLM 分析文本末尾用于图表渲染的 ```json``` 代码块，避免在界面直接暴露配置 JSON。"""
+    cleaned = re.sub(r"```json\s*\{[\s\S]*?\"charts\"[\s\S]*?\}\s*```", "", response_text)
+    return cleaned.strip()
+
+
 def build_figures(
     chart_config: Optional[Dict[str, Any]],
 ) -> List[Tuple[Dict[str, Any], go.Figure]]:
@@ -239,7 +245,10 @@ def build_figures(
 
     figures: List[Tuple[Dict[str, Any], go.Figure]] = []
     for chart in chart_config.get("charts", []):
-        fig = build_plotly_figure(chart)
-        if fig is not None:
-            figures.append((chart, fig))
+        try:
+            fig = build_plotly_figure(chart)
+            if fig is not None:
+                figures.append((chart, fig))
+        except Exception as exc:
+            logger.warning("构建图表失败 (%s): %s", chart.get("type"), exc)
     return figures
