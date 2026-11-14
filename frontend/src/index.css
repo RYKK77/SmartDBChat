@@ -1028,6 +1028,30 @@ textarea {
   margin: 4px 0 8px;
   padding-left: 20px;
 }
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+.markdown-body th {
+  background: var(--bg-subtle);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.markdown-body tr:nth-child(even) td {
+  background: rgba(148, 163, 184, 0.04);
+}
 .markdown-body code {
   font-family: var(--font-mono);
   font-size: 12px;

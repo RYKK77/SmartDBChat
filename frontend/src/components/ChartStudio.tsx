@@ -88,10 +88,14 @@ export function KpiStrip({ rows }: { rows: Record<string, any>[] }) {
   )
 }
 
-function buildChartDataFromItem(item: ChartItem): {
+function buildChartDataFromItem(
+  item: ChartItem,
+  fallbackSeriesName?: string,
+): {
   data: Record<string, any>[]
   seriesKeys: string[]
   xKey: string
+  showLegend: boolean
 } {
   const d = item.data || {}
   if (item.type === 'line' && Array.isArray(d.series) && d.series.length > 0) {
@@ -108,6 +112,7 @@ function buildChartDataFromItem(item: ChartItem): {
       data: rows,
       seriesKeys: d.series.map((s: any, idx: number) => s.name || `系列${idx + 1}`),
       xKey: 'label',
+      showLegend: true,
     }
   }
 
@@ -125,6 +130,7 @@ function buildChartDataFromItem(item: ChartItem): {
       data: rows,
       seriesKeys: d.series.map((s: any, idx: number) => s.name || `维度${idx + 1}`),
       xKey: 'label',
+      showLegend: true,
     }
   }
 
@@ -134,16 +140,29 @@ function buildChartDataFromItem(item: ChartItem): {
       y: Number(d.y[idx] ?? 0),
       name: d.hover_names?.[idx] ?? `点 ${idx + 1}`,
     }))
-    return { data: rows, seriesKeys: ['y'], xKey: 'x' }
+    return { data: rows, seriesKeys: ['y'], xKey: 'x', showLegend: false }
   }
 
+  const metricName =
+    (typeof d.y_axis_title === 'string' && d.y_axis_title.trim()) ||
+    (typeof d.series_name === 'string' && d.series_name.trim()) ||
+    (typeof d.metric_name === 'string' && d.metric_name.trim()) ||
+    (fallbackSeriesName && fallbackSeriesName.trim()) ||
+    ''
+
+  const seriesKey = metricName || 'value'
   const labels: any[] = d.labels || []
   const values: any[] = d.values || []
   const rows = labels.map((lbl, idx) => ({
     label: String(lbl),
-    value: Number(values[idx] ?? 0),
+    [seriesKey]: Number(values[idx] ?? 0),
   }))
-  return { data: rows, seriesKeys: ['value'], xKey: 'label' }
+  return {
+    data: rows,
+    seriesKeys: [seriesKey],
+    xKey: 'label',
+    showLegend: Boolean(metricName),
+  }
 }
 
 export function ChartStudio({
@@ -202,7 +221,128 @@ export function ChartStudio({
         }
 
   const effectiveType = sourceMode === 'auto' ? activeItem.type : chartType
-  const { data, seriesKeys, xKey } = buildChartDataFromItem({ ...activeItem, type: effectiveType })
+
+  const renderChartBody = (item: ChartItem, typeOverride: string) => {
+    const { data, seriesKeys, xKey, showLegend } = buildChartDataFromItem(
+      { ...item, type: typeOverride },
+      sourceMode === 'custom' ? yAxis : undefined,
+    )
+    return (
+      <div style={{ width: '100%', height: 310 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          {typeOverride === 'pie' ? (
+            <PieChart>
+              <Pie
+                data={data}
+                dataKey={seriesKeys[0] || 'value'}
+                nameKey={xKey}
+                cx="50%"
+                cy="50%"
+                innerRadius={56}
+                outerRadius={105}
+                paddingAngle={2}
+                label={({ name, percent }) => `${name} (${((percent ?? 0) * 100).toFixed(1)}%)`}
+              >
+                {data.map((_, index) => (
+                  <Cell key={`cell-${index}`} fill={PALETTE[index % PALETTE.length]} />
+                ))}
+              </Pie>
+              <Tooltip />
+              <Legend />
+            </PieChart>
+          ) : typeOverride === 'line' ? (
+            <LineChart data={data} margin={{ top: 10, right: 20, left: 0, bottom: 10 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+              <XAxis dataKey={xKey} tick={{ fontSize: 12, fill: 'var(--text-muted)' }} />
+              <YAxis tick={{ fontSize: 12, fill: 'var(--text-muted)' }} />
+              <Tooltip />
+              {showLegend && <Legend />}
+              {seriesKeys.map((k, idx) => (
+                <Line
+                  key={k}
+                  type="monotone"
+                  dataKey={k}
+                  stroke={PALETTE[idx % PALETTE.length]}
+                  strokeWidth={2.5}
+                  dot={{ r: 3.5 }}
+                />
+              ))}
+            </LineChart>
+          ) : typeOverride === 'area' ? (
+            <AreaChart data={data} margin={{ top: 10, right: 20, left: 0, bottom: 10 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+              <XAxis dataKey={xKey} tick={{ fontSize: 12, fill: 'var(--text-muted)' }} />
+              <YAxis tick={{ fontSize: 12, fill: 'var(--text-muted)' }} />
+              <Tooltip />
+              {showLegend && <Legend />}
+              {seriesKeys.map((k, idx) => (
+                <Area
+                  key={k}
+                  type="monotone"
+                  dataKey={k}
+                  stroke={PALETTE[idx % PALETTE.length]}
+                  fill={PALETTE[idx % PALETTE.length]}
+                  fillOpacity={0.22}
+                />
+              ))}
+            </AreaChart>
+          ) : typeOverride === 'scatter' ? (
+            <ScatterChart margin={{ top: 10, right: 20, left: 0, bottom: 10 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+              <XAxis
+                type="number"
+                dataKey="x"
+                name={(sourceMode === 'auto' && item.data?.x_axis_title) || xAxis}
+                tick={{ fontSize: 12, fill: 'var(--text-muted)' }}
+              />
+              <YAxis
+                type="number"
+                dataKey="y"
+                name={(sourceMode === 'auto' && item.data?.y_axis_title) || yAxis}
+                tick={{ fontSize: 12, fill: 'var(--text-muted)' }}
+              />
+              <Tooltip cursor={{ strokeDasharray: '3 3' }} />
+              <Scatter name={item.title || `${xAxis} vs ${yAxis}`} data={data} fill={PALETTE[0]} />
+            </ScatterChart>
+          ) : typeOverride === 'radar' ? (
+            <RadarChart cx="50%" cy="50%" outerRadius="76%" data={data}>
+              <PolarGrid stroke="var(--border)" />
+              <PolarAngleAxis dataKey={xKey} tick={{ fontSize: 11, fill: 'var(--text-secondary)' }} />
+              <PolarRadiusAxis tick={{ fontSize: 10, fill: 'var(--text-muted)' }} />
+              {seriesKeys.map((k, idx) => (
+                <Radar
+                  key={k}
+                  name={k}
+                  dataKey={k}
+                  stroke={PALETTE[idx % PALETTE.length]}
+                  fill={PALETTE[idx % PALETTE.length]}
+                  fillOpacity={0.25}
+                />
+              ))}
+              <Legend />
+              <Tooltip />
+            </RadarChart>
+          ) : (
+            <BarChart data={data} margin={{ top: 10, right: 20, left: 0, bottom: 10 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+              <XAxis dataKey={xKey} tick={{ fontSize: 12, fill: 'var(--text-muted)' }} />
+              <YAxis tick={{ fontSize: 12, fill: 'var(--text-muted)' }} />
+              <Tooltip />
+              {showLegend && <Legend />}
+              {seriesKeys.map((k, idx) => (
+                <Bar
+                  key={k}
+                  dataKey={k}
+                  fill={PALETTE[idx % PALETTE.length]}
+                  radius={[4, 4, 0, 0]}
+                />
+              ))}
+            </BarChart>
+          )}
+        </ResponsiveContainer>
+      </div>
+    )
+  }
 
   return (
     <div className="chart-studio">
@@ -282,109 +422,36 @@ export function ChartStudio({
         </div>
       </div>
 
-      <div style={{ width: '100%', height: 310 }}>
-        <ResponsiveContainer width="100%" height="100%">
-          {effectiveType === 'pie' ? (
-            <PieChart>
-              <Pie
-                data={data}
-                dataKey={seriesKeys[0] || 'value'}
-                nameKey={xKey}
-                cx="50%"
-                cy="50%"
-                innerRadius={56}
-                outerRadius={105}
-                paddingAngle={2}
-                label={({ name, percent }) => `${name} (${((percent ?? 0) * 100).toFixed(1)}%)`}
-              >
-                {data.map((_, index) => (
-                  <Cell key={`cell-${index}`} fill={PALETTE[index % PALETTE.length]} />
-                ))}
-              </Pie>
-              <Tooltip />
-              <Legend />
-            </PieChart>
-          ) : effectiveType === 'line' ? (
-            <LineChart data={data} margin={{ top: 10, right: 20, left: 0, bottom: 10 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-              <XAxis dataKey={xKey} tick={{ fontSize: 12, fill: 'var(--text-muted)' }} />
-              <YAxis tick={{ fontSize: 12, fill: 'var(--text-muted)' }} />
-              <Tooltip />
-              <Legend />
-              {seriesKeys.map((k, idx) => (
-                <Line
-                  key={k}
-                  type="monotone"
-                  dataKey={k}
-                  stroke={PALETTE[idx % PALETTE.length]}
-                  strokeWidth={2.5}
-                  dot={{ r: 3.5 }}
-                />
-              ))}
-            </LineChart>
-          ) : effectiveType === 'area' ? (
-            <AreaChart data={data} margin={{ top: 10, right: 20, left: 0, bottom: 10 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-              <XAxis dataKey={xKey} tick={{ fontSize: 12, fill: 'var(--text-muted)' }} />
-              <YAxis tick={{ fontSize: 12, fill: 'var(--text-muted)' }} />
-              <Tooltip />
-              <Legend />
-              {seriesKeys.map((k, idx) => (
-                <Area
-                  key={k}
-                  type="monotone"
-                  dataKey={k}
-                  stroke={PALETTE[idx % PALETTE.length]}
-                  fill={PALETTE[idx % PALETTE.length]}
-                  fillOpacity={0.22}
-                />
-              ))}
-            </AreaChart>
-          ) : effectiveType === 'scatter' ? (
-            <ScatterChart margin={{ top: 10, right: 20, left: 0, bottom: 10 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-              <XAxis dataKey="x" name={xAxis} tick={{ fontSize: 12, fill: 'var(--text-muted)' }} />
-              <YAxis dataKey="y" name={yAxis} tick={{ fontSize: 12, fill: 'var(--text-muted)' }} />
-              <Tooltip cursor={{ strokeDasharray: '3 3' }} />
-              <Scatter name={`${xAxis} vs ${yAxis}`} data={data} fill={PALETTE[0]} />
-            </ScatterChart>
-          ) : effectiveType === 'radar' ? (
-            <RadarChart cx="50%" cy="50%" outerRadius="76%" data={data}>
-              <PolarGrid stroke="var(--border)" />
-              <PolarAngleAxis dataKey={xKey} tick={{ fontSize: 11, fill: 'var(--text-secondary)' }} />
-              <PolarRadiusAxis tick={{ fontSize: 10, fill: 'var(--text-muted)' }} />
-              {seriesKeys.map((k, idx) => (
-                <Radar
-                  key={k}
-                  name={k}
-                  dataKey={k}
-                  stroke={PALETTE[idx % PALETTE.length]}
-                  fill={PALETTE[idx % PALETTE.length]}
-                  fillOpacity={0.25}
-                />
-              ))}
-              <Legend />
-              <Tooltip />
-            </RadarChart>
-          ) : (
-            <BarChart data={data} margin={{ top: 10, right: 20, left: 0, bottom: 10 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-              <XAxis dataKey={xKey} tick={{ fontSize: 12, fill: 'var(--text-muted)' }} />
-              <YAxis tick={{ fontSize: 12, fill: 'var(--text-muted)' }} />
-              <Tooltip />
-              <Legend />
-              {seriesKeys.map((k, idx) => (
-                <Bar
-                  key={k}
-                  dataKey={k}
-                  fill={PALETTE[idx % PALETTE.length]}
-                  radius={[4, 4, 0, 0]}
-                />
-              ))}
-            </BarChart>
-          )}
-        </ResponsiveContainer>
-      </div>
+      {sourceMode === 'auto' && presetCharts.length > 1 ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          {presetCharts.map((item, idx) => (
+            <div
+              key={`${item.type}-${item.title || idx}`}
+              style={
+                idx > 0
+                  ? { borderTop: '1px solid var(--border)', paddingTop: 14 }
+                  : undefined
+              }
+            >
+              {idx > 0 && (
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>
+                    {item.title || `图表 ${idx + 1}`}
+                  </div>
+                  {item.description && (
+                    <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
+                      {item.description}
+                    </div>
+                  )}
+                </div>
+              )}
+              {renderChartBody(item, item.type)}
+            </div>
+          ))}
+        </div>
+      ) : (
+        renderChartBody(activeItem, effectiveType)
+      )}
     </div>
   )
 }

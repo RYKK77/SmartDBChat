@@ -49,6 +49,18 @@ const STARTER_PROMPTS = [
   },
 ]
 
+import {
+  deriveSessionTitle,
+  isAutoConnectDisabled,
+  loadActiveSessionId,
+  loadChatSessions,
+  loadLastConnection,
+  saveActiveSessionId,
+  saveChatSessions,
+  setAutoConnectDisabled,
+  type ChatSession,
+} from './utils/storage'
+
 export function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     const saved = localStorage.getItem('smartdb_theme')
@@ -70,7 +82,19 @@ export function App() {
   const [highlightedTables, setHighlightedTables] = useState<string[]>([])
   const [selectedTable, setSelectedTable] = useState<string | null>(null)
 
-  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [sessions, setSessions] = useState<ChatSession[]>(() => loadChatSessions())
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
+    const savedId = loadActiveSessionId()
+    const all = loadChatSessions()
+    if (savedId && all.some((s) => s.id === savedId)) return savedId
+    return all[0]?.id || null
+  })
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    const all = loadChatSessions()
+    const savedId = loadActiveSessionId()
+    const target = (savedId && all.find((s) => s.id === savedId)) || all[0]
+    return target ? target.messages : []
+  })
   const [input, setInput] = useState('')
   const [isSending, setIsSending] = useState(false)
 
@@ -158,28 +182,96 @@ export function App() {
       api.getHealth().catch(() => null),
       api.getProviders().catch(() => ({ providers: [] })),
       api.getCacheStats().catch(() => null),
-    ]).then(([health, prov, stats]) => {
+    ]).then(async ([health, prov, stats]) => {
       setProviders(prov.providers || [])
       if (stats) setCacheStats(stats)
       if (health?.connected) {
         setConnected(true)
         setConnectionMeta(health.connection_meta || {})
         loadWorkspaceData()
+      } else if (!isAutoConnectDisabled()) {
+        const lastConn = loadLastConnection()
+        if (lastConn) {
+          try {
+            const res = await api.connect(lastConn)
+            setConnected(res.connected)
+            setConnectionMeta(res.connection_meta)
+            setConfig(res.config)
+            loadWorkspaceData()
+          } catch {
+            // 自动重连失败时保留已填配置，用户可在弹窗内调整
+          }
+        }
       }
     })
   }, [loadWorkspaceData])
 
   useEffect(() => {
+    const completed = messages.filter((m) => !m.isStreaming)
+    if (completed.length > 0) {
+      const targetId = activeSessionId || `sess-${Date.now()}`
+      if (!activeSessionId) {
+        setActiveSessionId(targetId)
+        saveActiveSessionId(targetId)
+      }
+      setSessions((prev) => {
+        const existingIdx = prev.findIndex((s) => s.id === targetId)
+        const updatedSession: ChatSession = {
+          id: targetId,
+          title: deriveSessionTitle(completed),
+          updatedAt: Date.now(),
+          messages: completed,
+        }
+        const next =
+          existingIdx >= 0
+            ? prev.map((s) => (s.id === targetId ? updatedSession : s))
+            : [updatedSession, ...prev]
+        saveChatSessions(next)
+        return next
+      })
+    }
     if (chatScrollRef.current) {
       chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight
     }
-  }, [messages])
+  }, [messages, activeSessionId])
+
+  const handleNewSession = () => {
+    setActiveSessionId(null)
+    saveActiveSessionId(null)
+    setMessages([])
+    setHighlightedTables([])
+    setActiveView('chat')
+  }
+
+  const handleSelectSession = (id: string) => {
+    const target = sessions.find((s) => s.id === id)
+    if (!target) return
+    setActiveSessionId(id)
+    saveActiveSessionId(id)
+    setMessages(target.messages)
+    setHighlightedTables([])
+    setActiveView('chat')
+  }
+
+  const handleDeleteSession = (id: string) => {
+    const next = sessions.filter((s) => s.id !== id)
+    setSessions(next)
+    saveChatSessions(next)
+    if (id === activeSessionId) {
+      const fallback = next[0] || null
+      setActiveSessionId(fallback?.id || null)
+      saveActiveSessionId(fallback?.id || null)
+      setMessages(fallback ? fallback.messages : [])
+      setHighlightedTables([])
+    }
+  }
 
   const handleConnected = (res: {
     connected: boolean
     connection_meta: ConnectionMeta
     config: EngineConfig
   }) => {
+    setAutoConnectDisabled(false)
     setConnected(res.connected)
     setConnectionMeta(res.connection_meta)
     setConfig(res.config)
@@ -191,6 +283,7 @@ export function App() {
   const handleDisconnect = async () => {
     try {
       await api.disconnect()
+      setAutoConnectDisabled(true)
       setConnected(false)
       setConnectionMeta({})
       setConfig(null)
@@ -443,10 +536,13 @@ export function App() {
               type="button"
               className="icon-btn"
               onClick={() => {
-                setMessages([])
-                setHighlightedTables([])
+                if (activeSessionId) {
+                  handleDeleteSession(activeSessionId)
+                } else {
+                  handleNewSession()
+                }
               }}
-              title="清空当前对话"
+              title="删除当前对话"
             >
               <Trash2 size={15} />
             </button>
@@ -474,6 +570,11 @@ export function App() {
           cacheStats={cacheStats}
           schemaGraph={schemaGraph}
           selectedTable={selectedTable}
+          sessions={sessions}
+          activeSessionId={activeSessionId}
+          onNewSession={handleNewSession}
+          onSelectSession={handleSelectSession}
+          onDeleteSession={handleDeleteSession}
           onOpenConnect={() => setConnectModalOpen(true)}
           onDisconnect={handleDisconnect}
           onUpdateConfig={handleUpdateConfig}

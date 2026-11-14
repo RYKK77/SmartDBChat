@@ -141,6 +141,7 @@ def build_answer_prompt(
                   "data": {{
                     "labels": ["类别1", "类别2", "类别3"],
                     "values": [30, 40, 50],
+                    "y_axis_title": "指标名称",
                     "orientation": "v",
                     "is_grouped": false,
                     "is_stacked": false,
@@ -180,6 +181,8 @@ def build_answer_prompt(
                   "data": {{
                     "x": [10, 20, 30, 40],
                     "y": [5, 15, 25, 35],
+                    "x_axis_title": "横轴指标",
+                    "y_axis_title": "纵轴指标",
                     "sizes": [10, 20, 30, 40],
                     "color_values": [1, 2, 3, 4],
                     "hover_names": ["点1", "点2", "点3", "点4"],
@@ -195,6 +198,7 @@ def build_answer_prompt(
                   "data": {{
                     "labels": ["2023-01", "2023-02", "2023-03"],
                     "values": [30, 40, 50],
+                    "y_axis_title": "指标名称",
                     "is_stacked": true,
                     "colors": ["#ff0000", "#00ff00", "#0000ff"]
                   }}
@@ -245,7 +249,7 @@ def build_answer_prompt(
                 }}
                 ```
 
-                请根据数据特点选择最合适的图表类型，最多提供2个图表配置。确保JSON格式正确，可以被解析。如果数据不适合可视化，可以不提供图表配置。
+                请根据数据特点选择最合适的图表类型，最多提供2个图表配置。并在柱状图、折线图、面积图、散点图的 data 中尽量填写清晰的指标名称（如 `y_axis_title`、`x_axis_title` 或 `series[].name`），以便前端图例与坐标轴准确展示。确保JSON格式正确，可以被解析。如果数据不适合可视化，可以不提供图表配置。
                 """,
         },
     ]

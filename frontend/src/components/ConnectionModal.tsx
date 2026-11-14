@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, Database, KeyRound, PlugZap, Server, X } from 'lucide-react'
+import { Bookmark, ChevronDown, ChevronRight, Database, KeyRound, PlugZap, Server, Trash2, X } from 'lucide-react'
 import { api } from '../services/api'
 import type {
   ConnectionMeta,
@@ -7,6 +7,15 @@ import type {
   EngineConfig,
   ProviderPreset,
 } from '../types/api'
+import {
+  deleteConnectionProfile,
+  loadLastConnection,
+  loadSavedProfiles,
+  saveConnectionProfile,
+  saveLastConnection,
+  setAutoConnectDisabled,
+  type SavedConnectionProfile,
+} from '../utils/storage'
 
 interface ConnectionModalProps {
   open: boolean
@@ -58,14 +67,19 @@ export function ConnectionModal({
   onConnected,
   onNotify,
 }: ConnectionModalProps) {
-  const [form, setForm] = useState<ConnectPayload>(DEFAULT_PAYLOAD)
+  const [form, setForm] = useState<ConnectPayload>(() => loadLastConnection() || DEFAULT_PAYLOAD)
+  const [savedProfiles, setSavedProfiles] = useState<SavedConnectionProfile[]>(() => loadSavedProfiles())
+  const [activeProfileId, setActiveProfileId] = useState<string | null>(null)
+  const [profileName, setProfileName] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [submitting, setSubmitting] = useState(false)
 
   useEffect(() => {
     if (!open) return
+    setSavedProfiles(loadSavedProfiles())
+    const lastSaved = loadLastConnection()
     setForm((prev) => {
-      const next = { ...prev }
+      const next = { ...DEFAULT_PAYLOAD, ...(lastSaved || prev) }
       if (providers.length > 0 && !providers.some((p) => p.name === next.provider)) {
         const first = providers[0]
         next.provider = first.name
@@ -132,6 +146,16 @@ export function ConnectionModal({
     setSubmitting(true)
     try {
       const res = await api.connect(form)
+      saveLastConnection(form)
+      setAutoConnectDisabled(false)
+      if (activeProfileId) {
+        const existing = savedProfiles.find((p) => p.id === activeProfileId)
+        setSavedProfiles(saveConnectionProfile(existing?.name || '', form, activeProfileId))
+      } else if (savedProfiles.length === 0) {
+        const updated = saveConnectionProfile('', form)
+        setSavedProfiles(updated)
+        if (updated[0]) setActiveProfileId(updated[0].id)
+      }
       onConnected(res)
       onNotify(
         form.db_type === 'sandbox'
@@ -168,6 +192,136 @@ export function ConnectionModal({
 
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 }}>
           <div className="modal-body">
+            {/* 已保存的连接配置管理 */}
+            <div
+              style={{
+                background: 'var(--bg-subtle)',
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-md)',
+                padding: '10px 12px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 8,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <span className="field-label" style={{ margin: 0, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                  <Bookmark size={12} color="var(--accent)" />
+                  已保存的连接配置（本地持久化）
+                </span>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                  {savedProfiles.length} 个配置
+                </span>
+              </div>
+
+              {savedProfiles.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {savedProfiles.map((prof) => {
+                    const isSelected = activeProfileId === prof.id
+                    return (
+                      <div
+                        key={prof.id}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 4,
+                          borderRadius: 'var(--radius-sm)',
+                          border: `1px solid ${isSelected ? 'var(--accent)' : 'var(--border)'}`,
+                          background: isSelected ? 'var(--accent-soft)' : 'var(--bg-surface)',
+                          padding: '3px 6px',
+                          fontSize: 12,
+                        }}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setForm({ ...DEFAULT_PAYLOAD, ...prof.payload })
+                            setActiveProfileId(prof.id)
+                            setProfileName(prof.name)
+                          }}
+                          style={{
+                            border: 'none',
+                            background: 'transparent',
+                            color: isSelected ? 'var(--accent-strong)' : 'var(--text-primary)',
+                            fontWeight: isSelected ? 600 : 500,
+                            cursor: 'pointer',
+                            padding: 0,
+                            fontSize: 12,
+                          }}
+                        >
+                          {prof.name}
+                        </button>
+                        <button
+                          type="button"
+                          title="删除该配置"
+                          onClick={() => {
+                            setSavedProfiles(deleteConnectionProfile(prof.id))
+                            if (activeProfileId === prof.id) {
+                              setActiveProfileId(null)
+                              setProfileName('')
+                            }
+                          }}
+                          style={{
+                            border: 'none',
+                            background: 'transparent',
+                            color: 'var(--text-muted)',
+                            cursor: 'pointer',
+                            display: 'inline-flex',
+                            padding: 2,
+                          }}
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: 6 }}>
+                <input
+                  className="input"
+                  style={{ flex: 1, fontSize: 12, padding: '5px 8px' }}
+                  value={profileName}
+                  onChange={(e) => setProfileName(e.target.value)}
+                  placeholder={`配置名称（默认: ${form.db_type === 'sandbox' ? '沙箱' : form.database || 'MySQL'} · ${form.provider}）`}
+                />
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => {
+                    const updated = saveConnectionProfile(
+                      profileName,
+                      form,
+                      activeProfileId || undefined,
+                    )
+                    setSavedProfiles(updated)
+                    saveLastConnection(form)
+                    if (!activeProfileId && updated[0]) {
+                      setActiveProfileId(updated[0].id)
+                    }
+                    onNotify('连接配置已保存到本地')
+                  }}
+                >
+                  {activeProfileId ? '更新配置' : '保存配置'}
+                </button>
+                {activeProfileId && (
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => {
+                      const updated = saveConnectionProfile(profileName, form)
+                      setSavedProfiles(updated)
+                      if (updated[0]) setActiveProfileId(updated[0].id)
+                      onNotify('已另存为新配置')
+                    }}
+                  >
+                    另存为
+                  </button>
+                )}
+              </div>
+            </div>
+
             {/* 数据源切换 */}
             <div className="field-group">
               <label className="field-label">

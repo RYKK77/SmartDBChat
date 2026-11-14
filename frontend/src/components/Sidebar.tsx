@@ -1,7 +1,9 @@
 import {
   Database,
   Layers,
+  MessageSquare,
   PlugZap,
+  Plus,
   RefreshCw,
   ShieldCheck,
   Sparkles,
@@ -15,6 +17,7 @@ import type {
   EngineConfig,
   SchemaGraphResponse,
 } from '../types/api'
+import type { ChatSession } from '../utils/storage'
 
 interface SidebarProps {
   collapsed: boolean
@@ -25,6 +28,11 @@ interface SidebarProps {
   cacheStats: CacheStats | null
   schemaGraph: SchemaGraphResponse | null
   selectedTable: string | null
+  sessions: ChatSession[]
+  activeSessionId: string | null
+  onNewSession: () => void
+  onSelectSession: (id: string) => void
+  onDeleteSession: (id: string) => void
   onOpenConnect: () => void
   onDisconnect: () => void
   onUpdateConfig: (patch: Partial<EngineConfig>) => void
@@ -42,6 +50,11 @@ export function Sidebar({
   cacheStats,
   schemaGraph,
   selectedTable,
+  sessions,
+  activeSessionId,
+  onNewSession,
+  onSelectSession,
+  onDeleteSession,
   onOpenConnect,
   onDisconnect,
   onUpdateConfig,
@@ -53,6 +66,102 @@ export function Sidebar({
 
   return (
     <aside className="sidebar">
+      {/* 对话记录 */}
+      <div className="side-section">
+        <div className="side-section-title">
+          <span>对话记录</span>
+          <button
+            type="button"
+            className="btn btn-sm"
+            style={{ padding: '2px 7px', fontSize: 11.5 }}
+            onClick={onNewSession}
+            title="新建对话"
+          >
+            <Plus size={12} />
+            新对话
+          </button>
+        </div>
+        {sessions.length === 0 ? (
+          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>暂无历史对话</div>
+        ) : (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
+              maxHeight: 168,
+              overflowY: 'auto',
+            }}
+          >
+            {sessions.map((sess) => {
+              const isActive = sess.id === activeSessionId
+              return (
+                <div
+                  key={sess.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    borderRadius: 'var(--radius-sm)',
+                    border: `1px solid ${isActive ? 'var(--accent)' : 'transparent'}`,
+                    background: isActive ? 'var(--accent-soft)' : 'transparent',
+                    padding: '4px 6px',
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => onSelectSession(sess.id)}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      border: 'none',
+                      background: 'transparent',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      textAlign: 'left',
+                      cursor: 'pointer',
+                      padding: 0,
+                      color: isActive ? 'var(--accent-strong)' : 'var(--text-primary)',
+                      fontSize: 12,
+                      fontWeight: isActive ? 600 : 400,
+                    }}
+                    title={sess.title}
+                  >
+                    <MessageSquare size={12} style={{ flexShrink: 0, opacity: 0.7 }} />
+                    <span
+                      style={{
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {sess.title}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onDeleteSession(sess.id)}
+                    title="删除对话"
+                    style={{
+                      border: 'none',
+                      background: 'transparent',
+                      color: 'var(--text-muted)',
+                      cursor: 'pointer',
+                      padding: 2,
+                      display: 'inline-flex',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
       {/* 连接状态 */}
       <div className="side-section">
         <div className="side-section-title">
