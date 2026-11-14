@@ -1,5 +1,10 @@
 from smartdbchat.cache import SemanticQueryCache
-from smartdbchat.charts import build_figures, build_plotly_figure, extract_chart_config
+from smartdbchat.charts import (
+    build_figures,
+    build_plotly_figure,
+    extract_chart_config,
+    recommend_chart_config,
+)
 from smartdbchat.config import (
     LLM_PROVIDERS,
     CacheConfig,
@@ -25,6 +30,10 @@ from smartdbchat.models import (
     QueryResult,
     QueryStatus,
 )
+from smartdbchat.scaling import ScalingResult, TestTimeScaler
+from smartdbchat.semantic_layer import GoldenExample, MetricDef, SemanticLayer
+from smartdbchat.sql_guard import SQLGuardResult, validate_sql_ast
+from smartdbchat.workflow import PreflightChecker, PreflightResult, PreflightStatus
 
 __all__ = [
     "CacheConfig",
@@ -34,12 +43,21 @@ __all__ = [
     "DatabaseManager",
     "EmbeddingConfig",
     "ExecutionAttempt",
+    "GoldenExample",
     "LLMClient",
     "LLMConfig",
+    "MetricDef",
+    "PreflightChecker",
+    "PreflightResult",
+    "PreflightStatus",
     "QueryResult",
     "QueryStatus",
+    "SQLGuardResult",
+    "ScalingResult",
+    "SemanticLayer",
     "SemanticQueryCache",
     "SmartDBEngine",
+    "TestTimeScaler",
     "UnsafeSQLError",
     "build_figures",
     "build_plotly_figure",
@@ -49,5 +67,7 @@ __all__ = [
     "get_all_modules",
     "get_tables_by_module",
     "is_valid_query_result",
+    "recommend_chart_config",
     "validate_read_only_sql",
+    "validate_sql_ast",
 ]

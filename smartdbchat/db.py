@@ -33,43 +33,11 @@ class UnsafeSQLError(ValueError):
 
 
 def validate_read_only_sql(sql: str) -> Tuple[bool, Optional[str]]:
-    """校验 SQL 是否为单条只读查询语句。"""
-    if not sql or not sql.strip():
-        return False, "SQL 语句为空"
+    """校验 SQL 是否为单条只读查询语句（基于 sqlglot AST 解析）。"""
+    from smartdbchat.sql_guard import validate_sql_ast
 
-    # 去除 SQL 注释
-    cleaned = re.sub(r"--.*?$", "", sql, flags=re.MULTILINE)
-    cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL).strip()
-
-    # 去除末尾分号后检查是否仍包含多条语句
-    stripped = cleaned.rstrip(";").strip()
-    if not stripped:
-        return False, "SQL 语句为空"
-
-    # 简单检查引号外是否存在分号（防止多语句注入）
-    without_strings = re.sub(r"'[^']*'|\"[^\"]*\"", "", stripped)
-    if ";" in without_strings:
-        return False, "禁止执行多条 SQL 语句"
-
-    first_word_match = re.match(r"^\s*\(?\s*([A-Za-z]+)", stripped)
-    if not first_word_match:
-        return False, "无法识别 SQL 语句类型"
-
-    first_word = first_word_match.group(1).upper()
-    if first_word not in _READ_ONLY_PREFIXES:
-        return False, f"仅允许只读查询，禁止执行 {first_word} 语句"
-
-    for keyword in _FORBIDDEN_KEYWORDS:
-        if re.search(rf"\b{keyword}\b", without_strings, flags=re.IGNORECASE):
-            return False, f"检测到潜在写操作或高危关键字: {keyword}"
-
-    if re.search(r"\bINTO\s+(?:OUTFILE|DUMPFILE)\b", without_strings, flags=re.IGNORECASE):
-        return False, "禁止使用 INTO OUTFILE / DUMPFILE 导出文件"
-
-    if re.search(r"\bFOR\s+UPDATE\b", without_strings, flags=re.IGNORECASE):
-        return False, "禁止执行带锁的 FOR UPDATE 查询"
-
-    return True, None
+    guard_res = validate_sql_ast(sql, dialect="mysql")
+    return guard_res.is_valid, guard_res.reason
 
 
 def _normalize_value(value: Any) -> Any:
@@ -89,7 +57,12 @@ def _normalize_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def extract_tables_from_sql(sql: str) -> List[str]:
-    """从 SQL 语句中提取引用的表名（去重）。"""
+    """从 SQL 语句中提取引用的表名（去重，优先使用 AST 解析）。"""
+    from smartdbchat.sql_guard import validate_sql_ast
+
+    guard_res = validate_sql_ast(sql, dialect="mysql")
+    if guard_res.tables:
+        return guard_res.tables
     from_pattern = r"(?:FROM|JOIN)\s+`?([A-Za-z0-9_]+)`?"
     tables = re.findall(from_pattern, sql, re.IGNORECASE)
     return list(dict.fromkeys(tables))
@@ -251,6 +224,30 @@ class DatabaseManager:
             f"WHERE `{safe_col}` IS NOT NULL LIMIT {safe_limit}"
         )
         return [row["val"] for row in rows if "val" in row]
+
+    def search_column_values(
+        self, table_name: str, column_name: str, keyword: str, limit: int = 20
+    ) -> List[Any]:
+        """按关键字模糊检索指定表列的去重非空值（用于枚举值/名称精准对齐）。"""
+        safe_table = self._sanitize_identifier(table_name)
+        safe_col = self._sanitize_identifier(column_name)
+        safe_limit = max(1, min(int(limit), 50))
+        kw = (keyword or "").strip()
+        if not kw:
+            return self.get_distinct_values(safe_table, safe_col, limit=safe_limit)
+        self._ensure_connected()
+        try:
+            self.cursor.execute(
+                f"SELECT DISTINCT `{safe_col}` AS val FROM `{safe_table}` "
+                f"WHERE `{safe_col}` IS NOT NULL AND CAST(`{safe_col}` AS CHAR) LIKE %s "
+                f"LIMIT %s",
+                (f"%{kw}%", safe_limit),
+            )
+            rows = _normalize_rows(list(self.cursor.fetchall() or []))
+            return [row["val"] for row in rows if "val" in row]
+        except Exception:
+            self._drain_cursor()
+            raise
 
     def get_specific_schema_info(self, tables: List[str]) -> str:
         """获取指定表的建表语句，未找到时返回提示文本。"""

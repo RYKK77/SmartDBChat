@@ -4,16 +4,18 @@ SmartDBChat 是一个基于大语言模型（LLM）的自然语言数据库查�
 
 ## 🌟 核心功能
 
-- **自然语言转 SQL（NL2SQL）**：结合数据库 `SHOW CREATE TABLE` Schema 信息生成准确的 MySQL 查询语句，支持按业务模块过滤表范围。
-- **只读 SQL 安全校验**：内置语句校验，仅允许 `SELECT` / `WITH` / `SHOW` / `DESCRIBE` / `EXPLAIN` 等只读查询，拦截写操作及多语句注入。
-- **自动错误处理与重试**：当 SQL 执行报错或返回空结果时，自动携带失败 SQL 与错误详情重新生成并重试。
-- **流式结果解读**：通过流式接口逐步输出专业数据分析、趋势与异常洞察。
-- **智能多图表可视化**：支持饼图、柱状图、折线图（含多系列）、散点图、面积图、热力图、雷达图、箱线图、漏斗图、瀑布图、树状图等 Plotly 交互式图表。
-- **多级语义查询缓存**：基于 SQLite 存储历史查询，支持精确哈希匹配、嵌入向量余弦相似度、TF-IDF 与关键词匹配兜底，并自动执行缓存容量上限管理。
+- **自然语言转 SQL（NL2SQL）与图谱 Schema Linking**：借鉴 QueryWeaver 图谱理解思路，构建表-列-外键 `SchemaGraph`，自动发现跨表最短 JOIN 路径与桥接表。
+- **sqlglot AST 只读安全与 Schema 校验**：基于 `sqlglot` AST 解析拦截写操作、多语句注入、高危系统函数与 `INTO OUTFILE`，支持表/列存在性校验与自动 `LIMIT` 钳位。
+- **轻量业务语义层（Semantic Layer）**：支持通过 YAML 配置数据库描述、全局业务规则（`user_rules`）、指标公式、业务术语、字段枚举说明与 Few-Shot Golden SQL 示例。
+- **Preflight 语义预检与有界纠错/恢复**：在生成 SQL 前拦截越权/闲聊并支持澄清反问；执行失败时按错误类型分类实施有界纠错（防重复死循环），耗尽后输出可解释 Recovery 诊断与推荐追问。
+- **列值探索与 Tool-Use Agent**：Agent 内置 `search_column_values`（关键字模糊探测列值）与 `get_join_path`（图谱关联路径查询）等工具，解决筛选值不匹配与多表关联难题。
+- **Test-Time Scaling 高精度模式**：支持多策略生成候选 SQL、AST 校验与只读试跑，并基于执行结果签名进行多数投票（Majority Vote）择优。
+- **MCP Server 开放集成**：内置标准 MCP Server（`python -m smartdbchat.mcp_server`），对外暴露 `list_tables`、`get_database_schema`、`find_join_path`、`sample_column_values`、`validate_sql` 与 `ask_database` 工具。
+- **流式结果解读与多视图分析工作台**：支持 **React + TypeScript + FastAPI (SSE)** 现代化前后端分离架构，提供分屏 `@xyflow/react` Schema 关系图谱与查询命中表高亮、Recharts 交互式 Chart Studio（支持智能推荐与图表类型/XY 轴动态切换）、可检索/排序/导出的数据表格、可编辑并受 AST 保护的 SQL 工作台（支持一键收藏 Golden SQL）、可视化 + YAML 语义层编辑器，以及追问建议芯片。
 
 ## ✨ 支持的模型与接口
 
-系统基于 OpenAI 兼容协议，侧边栏内置主流服务商预设（也支持任意自定义端点）：
+系统基于 OpenAI 兼容协议，侧边栏/连接弹窗内置主流服务商预设（也支持任意自定义端点）：
 
 | 服务商 | Base URL | 推荐模型示例 |
 | :--- | :--- | :--- |
@@ -31,17 +33,37 @@ SmartDBChat 是一个基于大语言模型（LLM）的自然语言数据库查�
 
 ```text
 SmartDBChat/
-├── app.py                   # Streamlit 前端入口与交互界面
+├── frontend/                # React 19 + TypeScript + Vite 现代化前端工作台
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── ChartStudio.tsx         # KPI 指标条 + Recharts 多图表动态切换工作室
+│   │   │   ├── ConnectionModal.tsx     # 沙箱/MySQL 数据源、模型预设与高级护栏配置弹窗
+│   │   │   ├── DataTableView.tsx       # 搜索过滤、列排序、分页与 CSV 导出表格
+│   │   │   ├── MessageCard.tsx         # 4 标签分析卡片 + SQL 工作台 + Golden SQL 收藏
+│   │   │   ├── SchemaGraphCanvas.tsx   # @xyflow/react ER 关系图谱、采样、列值探索与 JOIN 路径
+│   │   │   ├── SemanticLayerStudio.tsx # 业务语义层可视化与 YAML 双向编辑器
+│   │   │   └── Sidebar.tsx             # 引擎热更新参数栏、缓存统计与快速表目录
+│   │   ├── services/api.ts             # REST & SSE 流式客户端
+│   │   └── types/api.ts                # TypeScript 接口定义
 ├── smartdbchat/
+│   ├── server.py            # FastAPI REST + SSE 后端服务（支持托管 frontend/dist）
 │   ├── config.py            # 数据库、LLM 预设、Embedding 与缓存配置
-│   ├── models.py            # 结构化查询结果与缓存命中数据模型
+│   ├── models.py            # 结构化查询结果、工作流追踪与缓存命中数据模型
 │   ├── prompts.py           # SQL 生成、纠错重试与结果分析提示词
-│   ├── db.py                # MySQL 连接、只读 SQL 安全校验与 Schema 提取
+│   ├── db.py                # MySQL 连接、Schema 提取与列值探索
+│   ├── sql_guard.py         # sqlglot AST 只读安全、Schema 一致性校验与 LIMIT 钳位
+│   ├── schema_linker.py     # SchemaGraph 图谱构建、最短 JOIN 路径与表/列裁剪
+│   ├── semantic_layer.py    # YAML 语义层（指标/术语/user_rules/枚举/Few-Shot）
+│   ├── workflow.py          # Preflight 预检、错误分类、有界纠错、Recovery 与追问建议
+│   ├── scaling.py           # Test-Time Scaling 多候选生成与执行一致性投票
+│   ├── agent.py             # Tool-Use NL2SQL Agent（含列值搜索与图谱路径工具）
+│   ├── mcp_server.py        # 标准 MCP Server 暴露（stdio / streamable-http / sse）
 │   ├── llm.py               # OpenAI 兼容客户端封装与流式响应处理
 │   ├── cache.py             # SQLite 多级语义查询缓存（无 UI 耦合）
-│   ├── charts.py            # 图表 JSON 解析与 Plotly Figure 构建器
+│   ├── charts.py            # 图表 JSON 解析、确定性图表推荐与 Plotly Figure 构建器
 │   └── engine.py            # SmartDBEngine 核心查询编排引擎
-├── tests/                   # 单元测试套件
+├── app.py                   # 传统 Streamlit 前端入口（兼容保留）
+├── tests/                   # 单元测试与端到端集成测试套件
 ├── pyproject.toml           # uv 项目与依赖配置
 ├── uv.lock                  # uv 依赖锁文件
 └── requirements.txt         # 兼容传统 pip 的依赖列表
@@ -49,33 +71,44 @@ SmartDBChat/
 
 ## 📋 环境要求
 
-- Python 3.10+
-- [uv](https://docs.astral.sh/uv/)（推荐的 Python 包与虚拟环境管理工具）
-- MySQL 数据库
+- Python 3.10+ & [uv](https://docs.astral.sh/uv/)
+- Node.js 20+ & npm（用于构建或开发 `frontend/`）
+- MySQL 数据库（或直接使用内置高校教务 SQLite 演示沙箱）
 - 任意 OpenAI 兼容大模型 API 密钥（或本地 Ollama 服务）
 
 ## 🔧 安装与运行
 
-1. 安装 `uv`（若尚未安装）：
-
-```bash
-# macOS / Linux
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-2. 克隆仓库并使用 `uv` 同步环境与依赖：
+1. 同步 Python 依赖：
 
 ```bash
 uv sync
 ```
 
-3. 启动 Streamlit 应用：
+2. 构建 React 前端生产包并启动单端口一体化服务（FastAPI 同时提供 API 与前端页面）：
+
+```bash
+cd frontend && npm install && npm run build && cd ..
+uv run smartdbchat-server
+# 默认访问 http://127.0.0.1:8000
+```
+
+3. 前后端分离开发模式（热重载）：
+
+```bash
+# 终端 1：启动 FastAPI 后端
+uv run uvicorn smartdbchat.server:app --reload --port 8000
+
+# 终端 2：启动 Vite 前端（自动代理 /api 到 8000 端口）
+cd frontend && npm run dev
+```
+
+4. 启动传统 Streamlit 界面（兼容保留）：
 
 ```bash
 uv run streamlit run app.py
 ```
 
-4. 运行单元测试（可选）：
+5. 运行完整测试套件：
 
 ```bash
 uv run pytest -v
@@ -83,12 +116,9 @@ uv run pytest -v
 
 ## 🚀 使用指南
 
-1. **配置连接**：在左侧边栏填写 MySQL 连接信息，选择模型服务商预设（或自定义 Base URL 与模型名称）并填入 API Key，点击 **连接数据库**。
-2. **输入问题**：在主界面输入自然语言问题，例如：
-   - `"查询计算机科学专业平均分最高的前 5 名学生"`
-   - `"统计各个学院的课程数量并按照数量降序排列"`
-   - `"分析不同年级学生的选课情况"`
-3. **查看结果**：系统会展示生成的 SQL、原始数据表、流式 AI 分析结论以及自动匹配的交互式图表。
+1. **配置连接**：点击右上角 **连接数据源**，可一键启用内置高校教务 SQLite 沙箱或填写 MySQL 连接信息；选择模型服务商预设并填入 API Key（本地 Ollama 可免密）。
+2. **探索 Schema 与语义层**：在右侧分屏图谱或顶部 **Schema 图谱** 页面查看表间关系、探测列值与最短 JOIN 路径；在 **语义层中心** 维护指标口径与业务规则。
+3. **对话分析与调优**：输入自然语言问题，查看流式 AI 解读、交互式 Chart Studio、可排序导出的数据表，或在 **SQL 工作台** 微调 SQL 后重跑并一键收藏为 Golden SQL。
 
 ## 📜 许可证
 

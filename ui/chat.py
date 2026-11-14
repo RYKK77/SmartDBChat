@@ -22,7 +22,16 @@ def _render_assistant_payload(
 ) -> None:
     """渲染单条助手回复：分析与图表、原始数据表+CSV导出、SQL与调试详情。"""
     if not result.is_success:
-        st.error(f"查询未返回有效结果：{result.error or '未知错误'}")
+        if result.preflight_status != "on_topic":
+            st.warning(result.markdown_answer or result.error or "请补充或调整您的问题")
+        else:
+            st.error(f"查询未返回有效结果：{result.error or '未知错误'}")
+            if result.markdown_answer:
+                st.markdown(result.markdown_answer)
+        if result.follow_up_suggestions:
+            st.caption("💡 您可以尝试以下问题：")
+            for sug in result.follow_up_suggestions:
+                st.markdown(f"- {sug}")
         if result.sql:
             st.code(result.sql, language="sql")
         if result.attempts:
@@ -34,6 +43,10 @@ def _render_assistant_payload(
     if result.cache_hit:
         badges.append(
             f"缓存命中 ({result.cache_hit.match_type}, 相似度 {result.cache_hit.similarity:.2f})"
+        )
+    if result.scaling_info:
+        badges.append(
+            f"Scaling 投票 {result.scaling_info.get('consensus_votes', 0)}/{result.scaling_info.get('total_valid', 0)}"
         )
     st.caption(" · ".join(badges))
 
@@ -51,6 +64,10 @@ def _render_assistant_payload(
             if chart_meta.get("description"):
                 st.caption(chart_meta["description"])
             st.plotly_chart(fig, width="stretch", key=f"chart_{msg_index}_{id(fig)}")
+        if result.follow_up_suggestions:
+            with st.expander("💡 推荐追问", expanded=False):
+                for sug in result.follow_up_suggestions:
+                    st.markdown(f"- {sug}")
 
     with tab_data:
         df = pd.DataFrame(result.rows)
@@ -69,6 +86,12 @@ def _render_assistant_payload(
         if result.linked_tables:
             st.write("Schema Linking 锁定表:", result.linked_tables)
         st.code(result.sql, language="sql")
+        if result.workflow_trace:
+            with st.expander("工作流追踪 (Workflow Trace)", expanded=False):
+                st.write(result.workflow_trace)
+        if result.scaling_info:
+            with st.expander("Test-Time Scaling 候选与投票详情", expanded=False):
+                st.write(result.scaling_info)
         if result.agent_steps:
             with st.expander(f"Agent 工具调用轨迹 ({len(result.agent_steps)} 步)", expanded=False):
                 st.write(result.agent_steps)
@@ -119,6 +142,7 @@ def _execute_and_append(engine: SmartDBEngine, prompt: str) -> None:
             on_stream=on_stream,
             mode=st.session_state.get("query_mode", "agent"),
             history=history or None,
+            high_accuracy_mode=bool(st.session_state.get("high_accuracy_mode", False)),
         )
         elapsed = time.perf_counter() - start
         status_container.update(

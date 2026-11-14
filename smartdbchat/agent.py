@@ -166,6 +166,57 @@ AGENT_TOOLS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "search_column_values",
+            "description": "Search distinct values in a column matching a keyword (case-insensitive substring). Ideal when a column has many values or when recovering from an empty WHERE filter.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "table_name": {
+                        "type": "string",
+                        "description": "Name of the table.",
+                    },
+                    "column_name": {
+                        "type": "string",
+                        "description": "Name of the column.",
+                    },
+                    "keyword": {
+                        "type": "string",
+                        "description": "Keyword to search for inside column values.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of matching values to return (default 20).",
+                        "default": 20,
+                    },
+                },
+                "required": ["table_name", "column_name", "keyword"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_join_path",
+            "description": "Find the shortest foreign-key JOIN path and exact join columns between two tables in the schema graph.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "from_table": {
+                        "type": "string",
+                        "description": "Starting table name.",
+                    },
+                    "to_table": {
+                        "type": "string",
+                        "description": "Target table name.",
+                    },
+                },
+                "required": ["from_table", "to_table"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "explain_sql",
             "description": "Validate read-only safety and run EXPLAIN on a SQL query to verify syntax, tables, and columns before execution.",
             "parameters": {
@@ -279,8 +330,8 @@ class NL2SQLAgent:
             "Your goal is to accurately answer the user's question by generating and executing read-only SQL queries.\n\n"
             "Workflow & Rules:\n"
             "1. Only generate read-only SELECT / WITH / SHOW / DESCRIBE / EXPLAIN queries. Never attempt data modification.\n"
-            "2. If you are uncertain about table names, column names, or exact categorical filter values, "
-            "use `search_schema`, `get_table_ddl`, `sample_table_rows`, or `get_distinct_values` to explore first.\n"
+            "2. If you are uncertain about table names, column names, join paths, or exact categorical filter values, "
+            "use `search_schema`, `get_table_ddl`, `get_join_path`, `sample_table_rows`, `get_distinct_values`, or `search_column_values` to explore first.\n"
             f"{explain_instruction}"
             "4. You MUST execute your final SQL query using `execute_sql` and verify it succeeds before providing your final answer.\n"
             "5. If `execute_sql` or `explain_sql` returns an error, analyze the error message, fix your SQL, and retry."
@@ -355,6 +406,53 @@ class NL2SQLAgent:
             },
             ensure_ascii=False,
             default=str,
+        )
+
+    def _tool_search_column_values(
+        self, table_name: str, column_name: str, keyword: str, limit: int = 20
+    ) -> str:
+        effective_limit = max(1, min(int(limit or 20), 50))
+        search_fn = getattr(self.db, "search_column_values", None)
+        if callable(search_fn):
+            values = search_fn(table_name, column_name, keyword, limit=effective_limit)
+        else:
+            raw = self.db.get_distinct_values(table_name, column_name, limit=100)
+            kw_lower = (keyword or "").strip().lower()
+            values = [
+                v for v in raw if v is not None and (not kw_lower or kw_lower in str(v).lower())
+            ][:effective_limit]
+        return json.dumps(
+            {
+                "table": table_name,
+                "column": column_name,
+                "keyword": keyword,
+                "matches": [v for v in values if v is not None],
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+
+    def _tool_get_join_path(
+        self, from_table: str, to_table: str, schema_context: str = ""
+    ) -> str:
+        from smartdbchat.schema_linker import build_schema_graph
+
+        full_schema = self.db.get_schema_info() or schema_context
+        ddls = [b.strip() for b in full_schema.split("\n\n") if b.strip()] if full_schema else []
+        graph = build_schema_graph(ddls)
+        path = graph.shortest_path(from_table, to_table)
+        edges = graph.find_join_edges(from_table, to_table)
+        return json.dumps(
+            {
+                "from_table": from_table,
+                "to_table": to_table,
+                "path": path or [],
+                "join_edges": [
+                    f"{e.from_table}.{e.from_column} = {e.to_table}.{e.to_column}"
+                    for e in edges
+                ],
+            },
+            ensure_ascii=False,
         )
 
     def _tool_explain_sql(self, sql: str) -> Tuple[str, Optional[str]]:
@@ -588,6 +686,19 @@ class NL2SQLAgent:
                                 table_name=str(tool_args.get("table_name", "")),
                                 column_name=str(tool_args.get("column_name", "")),
                                 limit=int(tool_args.get("limit", 20)),
+                            )
+                        elif tool_name == "search_column_values":
+                            observation = self._tool_search_column_values(
+                                table_name=str(tool_args.get("table_name", "")),
+                                column_name=str(tool_args.get("column_name", "")),
+                                keyword=str(tool_args.get("keyword", "")),
+                                limit=int(tool_args.get("limit", 20)),
+                            )
+                        elif tool_name == "get_join_path":
+                            observation = self._tool_get_join_path(
+                                from_table=str(tool_args.get("from_table", "")),
+                                to_table=str(tool_args.get("to_table", "")),
+                                schema_context=schema_context,
                             )
                         elif tool_name == "explain_sql":
                             observation, err = self._tool_explain_sql(

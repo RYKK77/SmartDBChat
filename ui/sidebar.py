@@ -30,12 +30,27 @@ def _connect_engine(
 
         llm_client = LLMClient(llm_config)
         agent_cfg = AgentConfig(max_steps=int(st.session_state.get("agent_max_steps", 8)))
+        semantic_layer = None
+        sem_path = (st.session_state.get("semantic_yaml_path") or "").strip()
+        if sem_path:
+            from smartdbchat.semantic_layer import SemanticLayer
+            import os
+
+            if os.path.exists(sem_path):
+                semantic_layer = SemanticLayer.from_yaml_file(sem_path)
+            else:
+                st.warning(f"未找到语义层 YAML 文件: {sem_path}，已跳过加载")
+
         engine = SmartDBEngine(
             db=db_manager,
             llm=llm_client,
             cache=cache_system,
             agent_config=agent_cfg,
             default_mode=st.session_state.get("query_mode", "agent"),
+            semantic_layer=semantic_layer,
+            enable_preflight=bool(st.session_state.get("enable_preflight", True)),
+            enable_ast_schema_check=bool(st.session_state.get("enable_ast_schema_check", True)),
+            max_limit=int(st.session_state.get("max_limit", 1000)),
         )
         st.session_state.engine = engine
         st.session_state.connection_meta = {
@@ -159,6 +174,24 @@ def render_sidebar() -> None:
                 max_value=15,
                 value=st.session_state.get("agent_max_steps", 8),
                 step=1,
+            )
+            st.session_state.high_accuracy_mode = st.checkbox(
+                "高精度模式 (Test-Time Scaling 多数投票)",
+                value=st.session_state.get("high_accuracy_mode", False),
+                help="开启后将生成多路候选 SQL 并基于执行结果一致性投票择优（非 Agent 模式下生效）",
+            )
+            st.session_state.enable_preflight = st.checkbox(
+                "启用 Preflight 语义预检",
+                value=st.session_state.get("enable_preflight", True),
+            )
+            st.session_state.enable_ast_schema_check = st.checkbox(
+                "启用 AST Schema 一致性校验",
+                value=st.session_state.get("enable_ast_schema_check", True),
+            )
+            st.session_state.semantic_yaml_path = st.text_input(
+                "语义层配置 (YAML 路径，可选)",
+                value=st.session_state.get("semantic_yaml_path", ""),
+                placeholder="例如: ./semantic_layer.yaml",
             )
 
         if st.button("🔌 连接 / 更新配置", type="primary", width="stretch"):

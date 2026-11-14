@@ -8,6 +8,9 @@ class QueryStatus(str, Enum):
     EMPTY_RESULT = "empty_result"
     INVALID_SQL = "invalid_sql"
     ERROR = "error"
+    CLARIFICATION_NEEDED = "clarification_needed"
+    OFF_TOPIC = "off_topic"
+    REJECTED = "rejected"
 
 
 @dataclass
@@ -48,6 +51,10 @@ class QueryResult:
     linked_tables: List[str] = field(default_factory=list)
     agent_steps: List[Dict[str, Any]] = field(default_factory=list)
     mode: str = "pipeline"
+    preflight_status: str = "on_topic"
+    follow_up_suggestions: List[str] = field(default_factory=list)
+    workflow_trace: List[Dict[str, Any]] = field(default_factory=list)
+    scaling_info: Optional[Dict[str, Any]] = None
 
     @property
     def is_success(self) -> bool:

@@ -347,3 +347,27 @@ class SQLiteEvalBackend:
             (int(limit),),
         )
         return [row[0] for row in cursor.fetchall()]
+
+    def search_column_values(
+        self, table_name: str, column_name: str, keyword: str, limit: int = 20
+    ) -> List[Any]:
+        """按关键字模糊检索指定表某列的去重非空值。"""
+        if table_name not in self.list_tables():
+            raise ValueError(f"未知表名: {table_name}")
+
+        col_rows = self.conn.execute(f'PRAGMA table_info("{table_name}")').fetchall()
+        valid_columns = {row["name"] for row in col_rows}
+        if column_name not in valid_columns:
+            raise ValueError(f"表 {table_name} 中不存在列: {column_name}")
+
+        kw = (keyword or "").strip()
+        if not kw:
+            return self.get_distinct_values(table_name, column_name, limit=limit)
+
+        cursor = self.conn.execute(
+            f'SELECT DISTINCT "{column_name}" FROM "{table_name}" '
+            f'WHERE "{column_name}" IS NOT NULL AND CAST("{column_name}" AS TEXT) LIKE ? '
+            f'ORDER BY "{column_name}" LIMIT ?',
+            (f"%{kw}%", int(limit)),
+        )
+        return [row[0] for row in cursor.fetchall()]

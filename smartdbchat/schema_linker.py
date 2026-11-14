@@ -85,6 +85,54 @@ class SchemaGraph:
                     queue.append(path + [nxt])
         return None
 
+    def find_join_edges(self, src: str, dst: str) -> List[ForeignKeyMeta]:
+        """借鉴 QueryWeaver 图遍历思路：返回两表最短路径上的完整外键 JOIN 链。"""
+        path = self.shortest_path(src, dst)
+        if not path or len(path) < 2:
+            return []
+        join_chain: List[ForeignKeyMeta] = []
+        for a, b in zip(path, path[1:]):
+            matched: Optional[ForeignKeyMeta] = None
+            for edge in self.edges:
+                if (edge.from_table == a and edge.to_table == b) or (
+                    edge.from_table == b and edge.to_table == a
+                ):
+                    matched = edge
+                    break
+            if matched is not None:
+                join_chain.append(matched)
+        return join_chain
+
+    def to_graph_summary(self, tables: Optional[List[str]] = None) -> str:
+        """导出 QueryWeaver 风格的 Schema 图谱摘要（表节点 + 关联边）。"""
+        target_set = set(tables) if tables is not None else set(self.tables.keys())
+        if not target_set:
+            return ""
+        lines: List[str] = ["[Schema Graph]"]
+        for tname in sorted(target_set):
+            tmeta = self.tables.get(tname)
+            if not tmeta:
+                continue
+            cols = ", ".join(c.name for c in tmeta.columns[:12])
+            if len(tmeta.columns) > 12:
+                cols += f", ... (+{len(tmeta.columns) - 12})"
+            desc = f" — {tmeta.comment}" if tmeta.comment else ""
+            lines.append(f"- Node({tname}){desc}: [{cols}]")
+
+        seen_edges: Set[Tuple[str, str, str, str]] = set()
+        for edge in self.edges:
+            if edge.from_table in target_set and edge.to_table in target_set:
+                key = (edge.from_table, edge.from_column, edge.to_table, edge.to_column)
+                if key in seen_edges:
+                    continue
+                seen_edges.add(key)
+                tag = "inferred" if edge.inferred else "fk"
+                lines.append(
+                    f"- Edge[{tag}]: {edge.from_table}.{edge.from_column} -> "
+                    f"{edge.to_table}.{edge.to_column}"
+                )
+        return "\n".join(lines)
+
 
 @dataclass
 class LinkedSchema:

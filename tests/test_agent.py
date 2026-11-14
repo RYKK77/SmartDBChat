@@ -113,6 +113,8 @@ def test_database_backend_protocol_and_agent_tools():
         "get_table_ddl",
         "sample_table_rows",
         "get_distinct_values",
+        "search_column_values",
+        "get_join_path",
         "explain_sql",
         "execute_sql",
     ]
