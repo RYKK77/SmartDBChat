@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
@@ -97,6 +98,25 @@ class LLMConfig:
     api_key: str = ""
     base_url: str = "https://api.deepseek.com/v1"
     model: str = "deepseek-flash"
+
+    @classmethod
+    def from_env(cls) -> "LLMConfig":
+        """从环境变量读取配置，按 SMARTDB_* > LLM_* > OPENAI_* 的优先级取值。"""
+
+        def _first(*names: str) -> str:
+            for name in names:
+                value = os.getenv(name, "").strip()
+                if value:
+                    return value
+            return ""
+
+        defaults = cls()
+        return cls(
+            api_key=_first("SMARTDB_API_KEY", "LLM_API_KEY", "OPENAI_API_KEY"),
+            base_url=_first("SMARTDB_BASE_URL", "LLM_BASE_URL", "OPENAI_BASE_URL")
+            or defaults.base_url,
+            model=_first("SMARTDB_MODEL", "LLM_MODEL") or defaults.model,
+        )
 
 
 @dataclass

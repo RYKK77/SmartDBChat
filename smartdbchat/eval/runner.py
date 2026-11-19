@@ -1,6 +1,5 @@
 import argparse
 import json
-import os
 import time
 from dataclasses import asdict, dataclass, field
 from decimal import Decimal
@@ -503,8 +502,10 @@ def build_openai_engine(backend: SQLiteEvalBackend) -> EvalEngineFn:
     from smartdbchat.prompts import build_sql_prompt
 
     config = LLMConfig.from_env()
-    if not config.api_key and not os.getenv("OPENAI_API_KEY"):
-        raise RuntimeError("未检测到 LLM API Key（请设置 OPENAI_API_KEY 或 LLM_API_KEY）")
+    if not config.api_key:
+        raise RuntimeError(
+            "未检测到 LLM API Key（请设置 SMARTDB_API_KEY、LLM_API_KEY 或 OPENAI_API_KEY）"
+        )
     client = LLMClient(config)
     schema = backend.get_schema_info()
 
