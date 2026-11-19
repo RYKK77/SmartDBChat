@@ -1,4 +1,8 @@
-from smartdbchat.charts import build_figures, extract_chart_config
+from smartdbchat.charts import (
+    extract_chart_config,
+    recommend_chart_config,
+    strip_chart_json_block,
+)
 
 
 def test_extract_chart_config_strips_comments():
@@ -23,60 +27,47 @@ def test_extract_chart_config_strips_comments():
     assert config["charts"][0]["type"] == "bar"
 
 
-def test_build_figures_supports_graph_objects_charts():
-    config = {
-        "charts": [
-            {
-                "type": "line",
-                "title": "多系列折线图",
-                "data": {
-                    "series": [
-                        {"name": "A", "x": ["1月", "2月"], "y": [10, 20]},
-                        {"name": "B", "x": ["1月", "2月"], "y": [15, 25]},
-                    ]
-                },
-            },
-            {
-                "type": "radar",
-                "title": "能力雷达图",
-                "data": {"labels": ["速度", "准确", "成本"], "values": [80, 90, 70]},
-            },
-            {
-                "type": "funnel",
-                "title": "转化漏斗",
-                "data": {"labels": ["访问", "下单"], "values": [100, 40]},
-            },
-            {
-                "type": "waterfall",
-                "title": "瀑布图",
-                "data": {"labels": ["期初", "增长"], "values": [100, 20]},
-            },
-        ]
-    }
-    figures = build_figures(config)
-    assert len(figures) == 4
+def test_recommend_chart_config_types():
+    # 时间序列 -> line
+    time_rows = [
+        {"month": "2026-01", "revenue": 100},
+        {"month": "2026-02", "revenue": 150},
+    ]
+    line_cfg = recommend_chart_config(time_rows)
+    assert line_cfg is not None
+    assert line_cfg["charts"][0]["type"] == "line"
+
+    # 少量计数占比 -> pie
+    pie_rows = [
+        {"department": "计算机", "student_count": 120},
+        {"department": "数学", "student_count": 80},
+    ]
+    pie_cfg = recommend_chart_config(pie_rows)
+    assert pie_cfg is not None
+    assert pie_cfg["charts"][0]["type"] == "pie"
+
+    # 一般指标对比 -> bar
+    bar_rows = [
+        {"course": "高数", "avg_gpa": 3.4},
+        {"course": "线代", "avg_gpa": 3.6},
+    ]
+    bar_cfg = recommend_chart_config(bar_rows)
+    assert bar_cfg is not None
+    assert bar_cfg["charts"][0]["type"] == "bar"
 
 
-def test_strip_chart_json_block_and_malformed_resilience():
-    from smartdbchat.charts import strip_chart_json_block
-
+def test_strip_chart_json_block_and_single_object_format():
     raw = '这是分析结论。\n\n```json\n{"charts": [{"type": "pie"}]}\n```'
     assert strip_chart_json_block(raw) == "这是分析结论。"
 
-    # 即使其中一个图表配置异常，也不应影响其他图表或抛出异常
-    bad_config = {
-        "charts": [
-            {"type": "pie", "data": {"labels": ["A"], "values": [1]}},
-            {"type": "pie", "data": {"labels": ["A", "B"], "values": "invalid_not_list"}},
-        ]
-    }
-    figs = build_figures(bad_config)
-    assert len(figs) == 1
+    single_raw = '结论文本\n```json\n{"type": "bar", "title": "T", "data": {"labels": ["A"], "values": [1]}}\n```'
+    cfg = extract_chart_config(single_raw)
+    assert cfg is not None
+    assert len(cfg["charts"]) == 1
+    assert strip_chart_json_block(single_raw) == "结论文本"
 
 
 def test_extract_and_strip_array_chart_json_block():
-    from smartdbchat.charts import strip_chart_json_block
-
     raw = (
         "二、可视化方案\n\n"
         "```json\n"
@@ -88,3 +79,4 @@ def test_extract_and_strip_array_chart_json_block():
     assert len(config["charts"]) == 1
     assert config["charts"][0]["type"] == "bar"
     assert strip_chart_json_block(raw) == "二、可视化方案"
+

@@ -1,9 +1,8 @@
 from smartdbchat.cache import SemanticQueryCache
 from smartdbchat.charts import (
-    build_figures,
-    build_plotly_figure,
     extract_chart_config,
     recommend_chart_config,
+    strip_chart_json_block,
 )
 from smartdbchat.config import (
     LLM_PROVIDERS,
@@ -59,8 +58,6 @@ __all__ = [
     "SmartDBEngine",
     "TestTimeScaler",
     "UnsafeSQLError",
-    "build_figures",
-    "build_plotly_figure",
     "clean_sql_response",
     "extract_chart_config",
     "extract_tables_from_sql",
@@ -68,6 +65,7 @@ __all__ = [
     "get_tables_by_module",
     "is_valid_query_result",
     "recommend_chart_config",
+    "strip_chart_json_block",
     "validate_read_only_sql",
     "validate_sql_ast",
 ]

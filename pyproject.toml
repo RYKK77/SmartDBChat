@@ -12,13 +12,9 @@ dependencies = [
     "mysql-connector-python>=9.2.0",
     "numpy>=1.26.4",
     "openai>=1.60.0",
-    "pandas>=2.2.0",
-    "plotly>=6.0.0",
-    "pygments>=2.18.0",
     "pyyaml>=6.0.3",
     "requests>=2.32.3",
     "sqlglot>=30.31.0",
-    "streamlit>=1.40.1",
     "uvicorn>=0.54.0",
 ]
 
